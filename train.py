@@ -29,10 +29,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
 
+import gymnasium as gym
 import numpy as np
 
 from sb3_contrib import MaskablePPO
@@ -43,25 +45,66 @@ from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-from env import CATALOG, MyLittleBedroom
+from env import (CATALOG, DW, GH, GW, GRID_M, MAX_PER_CAT, N_ACTIONS,
+                 WCOEFF, MyLittleBedroom)
 
 
 def _mask_fn(env):
     return env.action_masks()
 
 
-def make_env(seed: int | None = None, max_steps: int = 8):
-    """Factory returning a fresh env: MyLittleBedroom → ActionMasker → Monitor.
+class CompletionBonusWrapper(gym.Wrapper):
+    """Adds a small dense reward each time a placement succeeds (non-DONE).
 
-    Monitor is outermost so it sees the unmodified reward; ActionMasker exposes
-    .action_masks() which MaskablePPO calls each step through the VecEnv.
+    Pure reward shaping — leaves env.py / verify.py / HTML reward parity
+    intact. Use --placement-bonus to enable; bonus value is recorded in
+    config.json so the run is fully reproducible.
+    """
+
+    def __init__(self, env, bonus: float = 0.1):
+        super().__init__(env)
+        self.bonus = bonus
+        self._prev_placed = 0
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        self._prev_placed = info.get("placed", 0)
+        return obs, info
+
+    def step(self, action):
+        obs, r, term, trunc, info = self.env.step(action)
+        n_now = info.get("placed", 0)
+        if n_now > self._prev_placed:
+            r += self.bonus
+        self._prev_placed = n_now
+        return obs, r, term, trunc, info
+
+
+def make_env(seed: int | None = None, max_steps: int = 8,
+             placement_bonus: float = 0.0):
+    """Factory: MyLittleBedroom → ActionMasker → [CompletionBonusWrapper] → Monitor.
+
+    Monitor is outermost so it sees the *shaped* reward used for training.
+    ActionMasker exposes .action_masks() which MaskablePPO calls each step.
     """
     def _init():
         env = MyLittleBedroom(seed=seed, max_steps=max_steps)
         env = ActionMasker(env, _mask_fn)
+        if placement_bonus > 0:
+            env = CompletionBonusWrapper(env, bonus=placement_bonus)
         env = Monitor(env)
         return env
     return _init
+
+
+def _git_commit_hash() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        ).decode().strip()
+    except Exception:
+        return None
 
 
 class EpisodeBreakdownLogger(BaseCallback):
@@ -140,6 +183,8 @@ def main():
     p.add_argument("--lr", type=float, default=3e-4)
     p.add_argument("--ent-coef", type=float, default=0.01,
                    help="entropy bonus; higher → more exploration")
+    p.add_argument("--placement-bonus", type=float, default=0.0,
+                   help="dense reward per successful placement (0 = pure sparse)")
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--clip-range", type=float, default=0.2)
     p.add_argument("--eval-freq", type=int, default=10_000,
@@ -154,20 +199,37 @@ def main():
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "best").mkdir(exist_ok=True)
 
-    # persist hyperparameters
+    # persist hyperparameters + env constants + git commit so the run is
+    # fully reproducible even if env.py later changes
     cfg = vars(args).copy()
     cfg["run_name"] = run_name
     cfg["started_at"] = datetime.now().isoformat()
+    cfg["git_commit"] = _git_commit_hash()
+    cfg["env_constants"] = {
+        "WCOEFF": WCOEFF,
+        "GRID_M": GRID_M,
+        "GW": GW, "GH": GH, "DW": DW,
+        "N_ACTIONS": N_ACTIONS,
+        "MAX_PER_CAT": MAX_PER_CAT,
+    }
+    cfg["reward_shaping"] = {
+        "placement_bonus": args.placement_bonus,
+        "note": ("dense reward per successful placement (non-DONE). 0 = pure "
+                 "sparse, matches env.py / verify.py / HTML exactly."),
+    }
     (run_dir / "config.json").write_text(json.dumps(cfg, indent=2))
 
     # ── envs ─────────────────────────────────────────────
-    env_fns = [make_env(args.seed + i, args.max_steps) for i in range(args.n_envs)]
+    env_fns = [make_env(args.seed + i, args.max_steps, args.placement_bonus)
+               for i in range(args.n_envs)]
     if args.n_envs == 1:
         vec_env = DummyVecEnv(env_fns)
     else:
         vec_env = SubprocVecEnv(env_fns)
-    # Separate seed for eval so it doesn't overlap training distribution.
-    eval_env = DummyVecEnv([make_env(args.seed + 100_000, args.max_steps)])
+    # Eval env: same bonus so eval reward matches training reward; use a
+    # disjoint seed so eval distribution isn't a subset of training.
+    eval_env = DummyVecEnv([make_env(args.seed + 100_000, args.max_steps,
+                                     args.placement_bonus)])
 
     # ── model ────────────────────────────────────────────
     model = MaskablePPO(
@@ -208,6 +270,7 @@ def main():
     print(f"  n_steps    : {args.n_steps}  (rollout = {args.n_steps * args.n_envs} env steps)")
     print(f"  lr         : {args.lr}")
     print(f"  ent_coef   : {args.ent_coef}")
+    print(f"  bonus      : {args.placement_bonus}  (per-placement dense reward)")
     print(f"  eval every : {args.eval_freq:,} steps  ({args.eval_eps} eps)")
     print(f"  logs       : {run_dir}/")
     print(f"  view live  : tensorboard --logdir runs/\n")

@@ -19,6 +19,11 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 <script type="text/babel" data-presets="react">
 var useState=React.useState,useMemo=React.useMemo,useCallback=React.useCallback;
 var GRID=0.15,GW=26,GH=22,CELL=18,DW=6,WW=12,WT=CELL,WCOEFF=0.2;
+// Reward v3 (multiplicative, ratio-based) — matches env.py
+var AVAIL_FACTOR={bed:0.32,desk:0.43,wardrobe:0.33,cabinet:0.37,nightstand:0.29};
+var NS_PAIR_BONUS=1.0;
+var PILLOW_W=2.0, WINDOW_W=1.0;
+var D_TAU=1.0, W_TAU=0.5;
 var GRAY="#999",LEM="#FFE500",WALLC="#C8C4BE";
 var CC={bed:"#45D468",desk:"#30D4A0",wardrobe:"#30A8D4",cabinet:"#5050D4",nightstand:"#9530D4"};
 var MAXC={bed:1,desk:1,wardrobe:1,cabinet:1,nightstand:2};
@@ -67,12 +72,32 @@ function fatAt(pl,x,y){for(var i=0;i<pl.length;i++){var p=pl[i];if(x>=p.x&&x<p.x
 function calc(pl,dw,dp,grid,ww,wp,rw,rh,wWidth){var sw=pl.length>0?flood(grid,dw,dp,rw,rh):new Set();var i,cc={};for(i=0;i<pl.length;i++){var c2=CAT[pl[i].fid].c;cc[c2]=(cc[c2]||0)+1;}
   var beds=[],nss=[];for(i=0;i<pl.length;i++){var ct=CAT[pl[i].fid].c;if(ct==="bed")beds.push(pl[i]);if(ct==="nightstand")nss.push(pl[i]);}
   var pNS=new Set();for(var ni=0;ni<nss.length;ni++){var ns=nss[ni];for(var bi=0;bi<beds.length;bi++){var bd=beds[bi],o=bd.ori,paired=false;if(o===0||o===2){var abv=ns.y+ns.fh===bd.y&&ns.x<bd.x+bd.fw&&ns.x+ns.fw>bd.x;var blw=ns.y===bd.y+bd.fh&&ns.x<bd.x+bd.fw&&ns.x+ns.fw>bd.x;var hbX=o===0?bd.x:bd.x+bd.fw-1;paired=(abv||blw)&&ns.x<=hbX&&ns.x+ns.fw>hbX;}else{var lft=ns.x+ns.fw===bd.x&&ns.y<bd.y+bd.fh&&ns.y+ns.fh>bd.y;var rgt=ns.x===bd.x+bd.fw&&ns.y<bd.y+bd.fh&&ns.y+ns.fh>bd.y;var hbY=o===1?bd.y:bd.y+bd.fh-1;paired=(lft||rgt)&&ns.y<=hbY&&ns.y+ns.fh>hbY;}if(paired){pNS.add(ns.id);break;}}}
-  var av=0,aP=[],aZ=[];for(i=0;i<pl.length;i++){var p=pl[i],sp=CAT[p.fid];if(cc[sp.c]>(MAXC[sp.c]||1)){aP.push(sp.n+":0");continue;}var con=false;for(var dy=-1;dy<=p.fh&&!con;dy++)for(var dx=-1;dx<=p.fw&&!con;dx++){if(dy>=0&&dy<p.fh&&dx>=0&&dx<p.fw)continue;if(sw.has((p.x+dx)+","+(p.y+dy)))con=true;}if(!con&&pl.length>0){aP.push(sp.n+":0");continue;}var m=1,b=0;if(sp.c==="nightstand"){if(pNS.has(p.id))b=1;else m=0.5;}var ok=true,zR=zoneRects(p),aCat=sp.c==="bed"?["nightstand"]:[],part=!!sp.z3,ag=false,ab=false;for(var ri=0;ri<zR.length;ri++){var zr=zR[ri];for(var zy=0;zy<zr.h;zy++)for(var zx=0;zx<zr.w;zx++){var cx=zr.x+zx,cy=zr.y+zy;if(!inR(cx,cy,rw,rh)){ab=true;continue;}if(grid[cy][cx]!==0){var oc=fatAt(pl,cx,cy);if(oc&&aCat.indexOf(CAT[oc.fid].c)>=0){ag=true;continue;}ab=true;}else ag=true;}}if(part)ok=ag;else ok=!ab;var val=ok?sp.v*m+b:0;av+=val;if(ok){var zc=zoneCells(p);for(var ai=0;ai<zc.length;ai++)aZ.push(zc[ai]);}aP.push(sp.n+":"+(Math.round(val*10)/10));}
+  var av=0,aP=[],aZ=[];for(i=0;i<pl.length;i++){var p=pl[i],sp=CAT[p.fid];if(cc[sp.c]>(MAXC[sp.c]||1)){aP.push(sp.n+":0");continue;}var con=false;for(var dy=-1;dy<=p.fh&&!con;dy++)for(var dx=-1;dx<=p.fw&&!con;dx++){if(dy>=0&&dy<p.fh&&dx>=0&&dx<p.fw)continue;if(sw.has((p.x+dx)+","+(p.y+dy)))con=true;}if(!con&&pl.length>0){aP.push(sp.n+":0");continue;}var m=1,b=0;if(sp.c==="nightstand"){if(pNS.has(p.id))b=1;else m=0.5;}var ok=true,zR=zoneRects(p),aCat=sp.c==="bed"?["nightstand"]:[],part=!!sp.z3,ag=false,ab=false;for(var ri=0;ri<zR.length;ri++){var zr=zR[ri];for(var zy=0;zy<zr.h;zy++)for(var zx=0;zx<zr.w;zx++){var cx=zr.x+zx,cy=zr.y+zy;if(!inR(cx,cy,rw,rh)){ab=true;continue;}if(grid[cy][cx]!==0){var oc=fatAt(pl,cx,cy);if(oc&&aCat.indexOf(CAT[oc.fid].c)>=0){ag=true;continue;}ab=true;}else ag=true;}}if(part)ok=ag;else ok=!ab;var val=ok?(Math.sqrt(sp.w*sp.h)*AVAIL_FACTOR[sp.c]*m+b):0;av+=val;if(ok){var zc=zoneCells(p);for(var ai=0;ai<zc.length;ai++)aZ.push(zc[ai]);}aP.push(sp.n+":"+(Math.round(val*10)/10));}
   var dcx=0,dcy=0,fac=0;if(dw==="top"){dcx=dp+DW/2;dcy=0.5;fac=Math.PI/2;}else if(dw==="bottom"){dcx=dp+DW/2;dcy=rh-0.5;fac=-Math.PI/2;}else if(dw==="left"){dcx=0.5;dcy=dp+DW/2;fac=0;}else{dcx=rw-0.5;dcy=dp+DW/2;fac=Math.PI;}
-  var exp=[],disc=0,tbc=0,psn=false,dd="";if(beds.length>0){var pSet=new Set();for(i=0;i<beds.length;i++){var pc=pillowCells(beds[i]);for(var pi=0;pi<pc.length;pi++)pSet.add(pc[pi][0]+","+pc[pi][1]);}for(i=0;i<beds.length;i++){var bb=beds[i];for(var by=0;by<bb.fh;by++)for(var bx=0;bx<bb.fw;bx++){tbc++;var bxc=bb.x+bx+0.5,byc=bb.y+by+0.5,ang=Math.atan2(byc-dcy,bxc-dcx),df=ang-fac;while(df>Math.PI)df-=2*Math.PI;while(df<-Math.PI)df+=2*Math.PI;if(Math.abs(df)<Math.PI/4){var blk=false,lx=Math.round(dcx),ly=Math.round(dcy),tx=bb.x+bx,ty=bb.y+by,adx=Math.abs(tx-lx),ady=Math.abs(ty-ly),sx=lx<tx?1:-1,sy=ly<ty?1:-1,err=adx-ady,cx2=lx,cy2=ly,st=0;while(st<100){st++;if(cx2===tx&&cy2===ty)break;var e2=2*err;if(e2>-ady){err-=ady;cx2+=sx;}if(e2<adx){err+=adx;cy2+=sy;}if(cx2===tx&&cy2===ty)break;if(inR(cx2,cy2,rw,rh)&&grid[cy2][cx2]!==0){var blkF=fatAt(pl,cx2,cy2);if(blkF&&CAT[blkF.fid].c==="wardrobe"){blk=true;break;}}}if(!blk){exp.push([bb.x+bx,bb.y+by]);if(pSet.has((bb.x+bx)+","+(bb.y+by)))psn=true;}}}}var be=tbc>0?Math.round(exp.length/tbc*50)/10:0;disc+=be+(psn?4:0);dd=exp.length+"/"+tbc+"\u00d75="+(Math.round(be*10)/10)+(psn?" +4":"");}
-  var wBlk=false,wBkr=null;for(var wi=0;wi<wWidth&&!wBlk;wi++){for(var wd=0;wd<2&&!wBlk;wd++){var wx,wy;if(ww==="top"){wx=wp+wi;wy=wd;}else if(ww==="bottom"){wx=wp+wi;wy=rh-1-wd;}else if(ww==="left"){wy=wp+wi;wx=wd;}else{wy=wp+wi;wx=rw-1-wd;}if(inR(wx,wy,rw,rh)&&grid[wy][wx]===1){var oc2=fatAt(pl,wx,wy);if(oc2){var pc2=CAT[oc2.fid].c;if(pc2==="bed"||pc2==="wardrobe"){wBlk=true;wBkr=oc2;}}}}}if(wBlk){disc+=3;dd+=" +3win";}
-  var wst=0,unr=0;if(pl.length>0){var te=0;for(var iy=0;iy<rh;iy++)for(var ix=0;ix<rw;ix++)if(grid[iy][ix]===0)te++;unr=te-sw.size;wst=Math.round(unr*WCOEFF*10)/10;}
-  var tot=Math.round((av-disc-wst)*10)/10;return{av:Math.round(av*10)/10,disc:Math.round(disc*10)/10,wst:wst,tot:tot,aP:aP.join("  "),dd:dd||"\u2014",wd:unr+"c",exp:exp,sw:sw,aZ:aZ,wBkr:wBkr,dcx:dcx,dcy:dcy,fac:fac};}
+  // v3 reward \u2014 pillow / window as RATIOS, combined multiplicatively
+  var exp=[],tbc=0,pen=0,tpn=0;
+  if(beds.length>0){
+    var pSet=new Set();
+    for(i=0;i<beds.length;i++){var pc=pillowCells(beds[i]);for(var pi=0;pi<pc.length;pi++)pSet.add(pc[pi][0]+","+pc[pi][1]);}
+    tpn=pSet.size;
+    for(i=0;i<beds.length;i++){var bb=beds[i];for(var by=0;by<bb.fh;by++)for(var bx=0;bx<bb.fw;bx++){tbc++;var bxc=bb.x+bx+0.5,byc=bb.y+by+0.5,ang=Math.atan2(byc-dcy,bxc-dcx),df=ang-fac;while(df>Math.PI)df-=2*Math.PI;while(df<-Math.PI)df+=2*Math.PI;if(Math.abs(df)<Math.PI/4){var blk=false,lx=Math.round(dcx),ly=Math.round(dcy),tx=bb.x+bx,ty=bb.y+by,adx=Math.abs(tx-lx),ady=Math.abs(ty-ly),sx=lx<tx?1:-1,sy=ly<ty?1:-1,err=adx-ady,cx2=lx,cy2=ly,st=0;while(st<100){st++;if(cx2===tx&&cy2===ty)break;var e2=2*err;if(e2>-ady){err-=ady;cx2+=sx;}if(e2<adx){err+=adx;cy2+=sy;}if(cx2===tx&&cy2===ty)break;if(inR(cx2,cy2,rw,rh)&&grid[cy2][cx2]!==0){var blkF=fatAt(pl,cx2,cy2);if(blkF&&CAT[blkF.fid].c==="wardrobe"){blk=true;break;}}}if(!blk){exp.push([bb.x+bx,bb.y+by]);if(pSet.has((bb.x+bx)+","+(bb.y+by)))pen++;}}}}
+  }
+  var pillowRatio=tpn>0?pen/tpn:0;
+  var wbn=0,wBkr=null;
+  for(var wi=0;wi<wWidth;wi++){for(var wd=0;wd<2;wd++){var wx,wy;if(ww==="top"){wx=wp+wi;wy=wd;}else if(ww==="bottom"){wx=wp+wi;wy=rh-1-wd;}else if(ww==="left"){wy=wp+wi;wx=wd;}else{wy=wp+wi;wx=rw-1-wd;}if(inR(wx,wy,rw,rh)&&grid[wy][wx]===1){var oc2=fatAt(pl,wx,wy);if(oc2){var pc2=CAT[oc2.fid].c;if(pc2==="bed"||pc2==="wardrobe"){wbn++;if(!wBkr)wBkr=oc2;}}}}}
+  var winStrip=wWidth*2;
+  var windowRatio=winStrip>0?wbn/winStrip:0;
+  var dTotal=PILLOW_W*pillowRatio+WINDOW_W*windowRatio;
+  var comfort=Math.exp(-dTotal/D_TAU);
+  var unr=0,te=0,wasteRatio=0;
+  if(pl.length>0){for(var iy=0;iy<rh;iy++)for(var ix=0;ix<rw;ix++)if(grid[iy][ix]===0)te++;unr=Math.max(0,te-sw.size);wasteRatio=te>0?unr/te:0;}
+  var wasteEff=Math.exp(-wasteRatio/W_TAU);
+  var tot=Math.round(av*comfort*wasteEff*10)/10;
+  var discAmt=Math.round(av*(1-comfort)*10)/10;
+  var wstAmt=Math.round(av*comfort*(1-wasteEff)*10)/10;
+  var dd="pillow "+pen+"/"+tpn+" ("+(pillowRatio*100).toFixed(0)+"%)"+" \u00b7 win "+wbn+"/"+winStrip+" ("+(windowRatio*100).toFixed(0)+"%) \u2192 \u00d7"+comfort.toFixed(2);
+  var wd=unr+"/"+te+" ("+(wasteRatio*100).toFixed(0)+"%) \u2192 \u00d7"+wasteEff.toFixed(2);
+  return{av:Math.round(av*10)/10,disc:discAmt,wst:wstAmt,tot:tot,aP:aP.join("  "),dd:dd,wd:wd,exp:exp,sw:sw,aZ:aZ,wBkr:wBkr,dcx:dcx,dcy:dcy,fac:fac,comfort:comfort,wasteEff:wasteEff,pillowRatio:pillowRatio,windowRatio:windowRatio,wasteRatio:wasteRatio};}
 function Thumb(p){var s=1.5;return <svg width={Math.max(p.w*s+2,8)} height={Math.max(p.h*s+2,8)} style={{marginRight:3,flexShrink:0}}><rect x={1} y={1} width={p.w*s} height={p.h*s} fill={p.color} rx={1} opacity={0.7}/></svg>;}
 
 function App(){

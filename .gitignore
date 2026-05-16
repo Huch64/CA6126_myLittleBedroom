@@ -13,6 +13,7 @@ env/
 # Training artifacts — per assignment, no checkpoints in submission
 checkpoints/
 runs/
+plots/
 logs/
 tb_logs/
 wandb/

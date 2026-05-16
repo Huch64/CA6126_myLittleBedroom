@@ -594,53 +594,80 @@ def _draw_reward_details(ax, breakdown):
                 va="top", ha="right", family=MONO)
         y -= 0.045
 
+    # Comfort factor (multiplicative)
     y -= 0.025
-    ax.text(0.02, y, "Discomfort details", fontsize=SZ_DETAIL, color="#888",
-            va="top", family=MONO)
+    ax.text(0.02, y, "Comfort  (× availability)", fontsize=SZ_DETAIL,
+            color="#888", va="top", family=MONO)
     y -= 0.055
-    exp = breakdown["exposed_cells"]; tot = breakdown["total_bed_cells"]
-    bes = breakdown["bed_exposure_score"]
-    pillow = breakdown["pillow_seen"]; winblk = breakdown["window_blocked"]
-    for k, v, contrib in [
-        ("bed exposed",  f"{exp}/{tot}",            f"+{bes}"),
-        ("pillow seen",  "yes" if pillow else "no", "+4.0" if pillow else "+0.0"),
-        ("window block", "yes" if winblk else "no", "+3.0" if winblk else "+0.0"),
+    n_pil = breakdown.get("n_exposed_pillow", 0)
+    tot_pil = breakdown.get("total_pillow_cells", 0)
+    pil_r = breakdown.get("pillow_ratio", 0.0)
+    n_win = breakdown.get("n_window_blocked", 0)
+    win_strip = breakdown.get("window_strip_cells", 0)
+    win_r = breakdown.get("window_ratio", 0.0)
+    comfort = breakdown.get("comfort", 1.0)
+    for k, v, r in [
+        ("pillow visible", f"{n_pil}/{tot_pil}", f"{pil_r:.2f}"),
+        ("window blocked", f"{n_win}/{win_strip}", f"{win_r:.2f}"),
     ]:
-        ax.text(0.04, y, f"{k:<13}", fontsize=SZ_DETAIL, color="#444",
+        ax.text(0.04, y, f"{k:<14}", fontsize=SZ_DETAIL, color="#444",
                 va="top", family=MONO)
-        ax.text(0.52, y, v, fontsize=SZ_DETAIL, color="#666",
+        ax.text(0.55, y, v, fontsize=SZ_DETAIL, color="#666",
                 va="top", family=MONO)
-        ax.text(1.0, y, contrib, fontsize=SZ_DETAIL,
-                color="#c44" if contrib != "+0.0" else "#bbb",
+        ax.text(1.0, y, f"ratio {r}", fontsize=SZ_DETAIL, color="#666",
                 va="top", ha="right", family=MONO)
-        y -= 0.045
+        y -= 0.040
+    ax.text(0.04, y, "comfort factor", fontsize=SZ_DETAIL,
+            color="#444", va="top", family=MONO, weight="bold")
+    ax.text(1.0, y, f"× {comfort:.2f}", fontsize=SZ_DETAIL,
+            color="#c44" if comfort < 1.0 else "#2a9",
+            va="top", ha="right", family=MONO, weight="bold")
+    y -= 0.045
 
-    y -= 0.025
-    ax.text(0.02, y, "Waste details", fontsize=SZ_DETAIL, color="#888",
-            va="top", family=MONO)
+    # Waste-efficiency factor
+    y -= 0.020
+    ax.text(0.02, y, "Waste-eff  (× comfort × A)", fontsize=SZ_DETAIL,
+            color="#888", va="top", family=MONO)
     y -= 0.055
     unr = breakdown["unreachable_cells"]
-    ax.text(0.04, y, f"unreachable    {unr} cells × 0.2",
+    tot_e = breakdown.get("total_empty_cells", 0)
+    w_r = breakdown.get("waste_ratio", 0.0)
+    w_eff = breakdown.get("waste_eff", 1.0)
+    ax.text(0.04, y, f"{'unreachable':<14}",
             fontsize=SZ_DETAIL, color="#444", va="top", family=MONO)
-    ax.text(1.0, y, f"+{breakdown['waste']}", fontsize=SZ_DETAIL,
-            color="#c44" if breakdown["waste"] > 0 else "#bbb",
+    ax.text(0.55, y, f"{unr}/{tot_e}", fontsize=SZ_DETAIL, color="#666",
+            va="top", family=MONO)
+    ax.text(1.0, y, f"ratio {w_r:.2f}", fontsize=SZ_DETAIL, color="#666",
             va="top", ha="right", family=MONO)
+    y -= 0.040
+    ax.text(0.04, y, "waste-efficiency", fontsize=SZ_DETAIL,
+            color="#444", va="top", family=MONO, weight="bold")
+    ax.text(1.0, y, f"× {w_eff:.2f}", fontsize=SZ_DETAIL,
+            color="#c44" if w_eff < 1.0 else "#2a9",
+            va="top", ha="right", family=MONO, weight="bold")
 
 
 def _draw_totals(ax, breakdown):
-    """Right bottom: A / D / W rows + big TOTAL number, all at FIXED y
-    positions regardless of how many reward details are above."""
+    """Right bottom: multiplicative reward breakdown + big TOTAL.
+
+    R = availability × comfort × waste_eff
+        (everything at FIXED y positions for visual stability across frames)
+    """
     if breakdown is None:
         return
 
-    # Top divider — sits clear of the rows below.
+    # Top divider
     ax.plot([0.0, 1.0], [0.96, 0.96], color="#ccc", lw=1.0,
             transform=ax.transAxes)
 
+    A = breakdown["availability"]
+    comfort = breakdown.get("comfort", 1.0)
+    w_eff = breakdown.get("waste_eff", 1.0)
+
     rows = [
-        ("Availability", f"+{breakdown['availability']}", "#222"),
-        ("Discomfort",   f"-{breakdown['discomfort']}",   "#c44"),
-        ("Waste",        f"-{breakdown['waste']}",        "#c44"),
+        ("Availability",      f"+{A}",            "#222"),
+        ("× comfort",         f"× {comfort:.2f}", "#c44" if comfort < 1.0 else "#666"),
+        ("× waste-eff",       f"× {w_eff:.2f}",   "#c44" if w_eff < 1.0 else "#666"),
     ]
     y_positions = [0.82, 0.68, 0.54]
     for (k, v, c), y in zip(rows, y_positions):
@@ -649,14 +676,10 @@ def _draw_totals(ax, breakdown):
         ax.text(1.0, y, v, fontsize=SZ_BODY, color=c,
                 va="center", ha="right", weight="bold", family=MONO)
 
-    # Divider above TOTAL — placed in the empty band between rows and TOTAL
-    # so the line never overlaps with text.
+    # Divider between factors and TOTAL
     ax.plot([0.0, 1.0], [0.40, 0.40], color="#bbb", lw=1.0,
             transform=ax.transAxes)
 
-    # TOTAL label + big number share a baseline at a fixed y. The big serif
-    # number rises about 0.10 axes units above the baseline (28pt ≈ 35 px
-    # in a ~245 px tall axes), well below the divider at 0.40.
     BASELINE = 0.16
     ax.text(0.02, BASELINE, "TOTAL", fontsize=SZ_BODY + 2, color="#333",
             va="baseline", weight="bold", family=MONO)

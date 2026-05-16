@@ -33,11 +33,56 @@ from gymnasium import spaces
 GRID_M = 0.15
 GW, GH = 26, 22
 DW = 6
-WCOEFF = 0.2
 ROOM_W_RANGE = (14, 26)
 ROOM_H_RANGE = (18, 22)
 WINDOW_WALLS = ("top", "left", "right")
 N_ORI = 4
+
+# ── reward v3 (multiplicative, ratio-based, scale-invariant) ──────
+#
+# R = Availability × comfort × waste_efficiency
+#
+#   • Availability  = Σ (√area × cat_factor)  — kept sub-linear so big
+#                     furniture has diminishing returns.
+#   • comfort       = exp(−D_total / D_TAU)   — D_total combines three
+#                     dimensionless ratios (each ∈ [0, 1]):
+#                         bed_exp_ratio  = exposed body cells / total bed cells
+#                         pillow_ratio   = exposed pillow cells / total pillow
+#                         window_ratio   = blocked window cells / window strip
+#   • waste_eff     = exp(−W / W_TAU)         — W = unreachable / empty cells.
+#
+# Why ratios? Every penalty is a fraction of "the relevant resource", so the
+# reward is scale-invariant across room sizes and furniture dimensions. No
+# room-specific tuning needed.
+#
+# Why multiplicative? Penalties bound to (0, 1] act as efficiency discounts on
+# the placed value, never below zero. R = 0 only when A = 0 (i.e. DONE-
+# immediate); any placement gives R > 0, mathematically eliminating the
+# DONE-trap local optimum.
+
+AVAIL_FACTOR = {                    # availability = √(area_cells) × factor
+    "bed":        0.32,             # bed 1.8: √168 × 0.32 ≈ 4.15
+    "desk":       0.43,             # desk XL: √48  × 0.43 ≈ 2.98
+    "wardrobe":   0.33,             # wardrobe XXL: √56 × 0.33 ≈ 2.47
+    "cabinet":    0.37,             # cabinet XL: √30 × 0.37 ≈ 2.03
+    "nightstand": 0.29,             # nightstand A: √12 × 0.29 ≈ 1.00
+}
+NIGHTSTAND_PAIR_BONUS = 1.0         # absolute bonus when paired with headboard
+
+# Discomfort ratio weights (relative importance; each ratio ∈ [0, 1])
+BED_EXP_W = 1.0                     # fraction of non-pillow bed cells exposed
+PILLOW_W  = 2.0                     # privacy weighted higher than body exposure
+WINDOW_W  = 1.0                     # fraction of window strip blocked
+
+# Decay time-constants (dimensionless; D_total/W reaching TAU → factor = 1/e)
+D_TAU = 1.0                         # D_total = 1.0 (≈ full discomfort) ⇒ ×0.37
+W_TAU = 0.5                         # waste_ratio = 0.5 (half room unreachable) ⇒ ×0.37
+
+# Back-compat shims (kept so old code that imports these doesn't break).
+# They have no effect under v3 — the actual reward uses the ratios above.
+CELL_REWARD = 1.0
+WASTE_FACTOR = 1.0
+WCOEFF = WASTE_FACTOR * CELL_REWARD
 
 
 @dataclass(frozen=True)
@@ -101,6 +146,12 @@ class Placement:
 
 def get_footprint(spec: FurnSpec, ori: int) -> tuple[int, int]:
     return (spec.h, spec.w) if ori in (1, 3) else (spec.w, spec.h)
+
+
+def _value(spec: FurnSpec) -> float:
+    """v2 availability: √area × per-category factor × CELL_REWARD."""
+    area = spec.w * spec.h
+    return math.sqrt(area) * AVAIL_FACTOR[spec.cat] * CELL_REWARD
 
 
 def encode_action(fid: int, x: int, y: int, ori: int) -> int:
@@ -329,7 +380,27 @@ class MyLittleBedroom(gym.Env):
         return True
 
     def _reward(self) -> float:
-        """Compute final reward; stores breakdown in self._last_breakdown."""
+        """Compute final reward (v3: multiplicative, ratio-based).
+
+        R = availability  ×  comfort  ×  waste_eff
+          = availability  ×  exp(−D_total / D_TAU)  ×  exp(−waste_ratio / W_TAU)
+
+        where every penalty is the fraction of its relevant resource:
+            pillow_ratio  = exposed_pillow_cells / total_pillow_cells
+            window_ratio  = blocked_window_cells / window_strip_cells
+            waste_ratio   = unreachable_cells / total_empty_cells
+            D_total       = PILLOW_W*pillow_ratio + WINDOW_W*window_ratio
+
+        Bed-body exposure (excluding pillow) is intentionally NOT penalised —
+        in real design privacy concerns the head end (where the pillow is),
+        not the side of the bed.
+
+        Properties:
+            • All ratios ∈ [0, 1] → scale-invariant across room sizes
+            • R = 0 iff availability = 0 (DONE-immediate) — no other trap
+            • Any furniture placement makes R > 0
+            • D = 0, W = 0 → no discount, R = availability (full credit)
+        """
         rw, rh, pl = self.room_w, self.room_h, self.placed
         swept = _flood(self.grid, self.door_pos, rw, rh) if pl else set()
 
@@ -341,30 +412,35 @@ class MyLittleBedroom(gym.Env):
         nightstands = [p for p in pl if CATALOG[p.fid].cat == "nightstand"]
         paired = _paired_nightstands(beds, nightstands)
 
+        # ── availability  (√area × cat_factor, plus pair bonus) ──
         availability = 0.0
         per_item: list[tuple[str, float]] = []
         for p in pl:
             spec = CATALOG[p.fid]
+            base_v = _value(spec)
             if cat_counts[spec.cat] > MAX_PER_CAT[spec.cat]:
                 per_item.append((spec.name, 0.0)); continue
             if not _has_reachable_neighbor(p, swept):
                 per_item.append((spec.name, 0.0)); continue
             mult, bonus = 1.0, 0.0
             if spec.cat == "nightstand":
-                if id(p) in paired: bonus = 1.0
+                if id(p) in paired: bonus = NIGHTSTAND_PAIR_BONUS
                 else: mult = 0.5
             allowed = {"nightstand"} if spec.cat == "bed" else set()
             zone_ok = _zone_ok(p, self.grid, pl, rw, rh, allowed, partial=spec.z3)
-            val = spec.v * mult + bonus if zone_ok else 0.0
+            val = base_v * mult + bonus if zone_ok else 0.0
             availability += val
             per_item.append((spec.name, round(val * 10) / 10))
 
+        # ── trace door cone (for pillow ratio + visualization overlay) ──
         dcx, dcy, fac = _door_center("bottom", self.door_pos, rw, rh)
         exposed: list[tuple[int, int]] = []
         total_bed = 0
-        pillow_seen = False
+        exposed_pillow_n = 0
+        total_pillow_n = 0
         if beds:
             pillow_set = {c for b in beds for c in _pillow_cells(b)}
+            total_pillow_n = len(pillow_set)
             for b in beds:
                 for by in range(b.fh):
                     for bx in range(b.fw):
@@ -377,38 +453,66 @@ class MyLittleBedroom(gym.Env):
                                                       self.grid, pl, rw, rh):
                                 exposed.append((gx, gy))
                                 if (gx, gy) in pillow_set:
-                                    pillow_seen = True
-        bed_exp = round(len(exposed) / total_bed * 50) / 10 if total_bed else 0.0
-        discomfort = bed_exp + (4.0 if pillow_seen else 0.0)
+                                    exposed_pillow_n += 1
 
-        window_blocked = _window_blocked(self.win_wall, self.win_pos, self.win_w,
-                                         rw, rh, self.grid, pl)
-        if window_blocked:
-            discomfort += 3.0
+        # ── ratios ──
+        pillow_ratio = exposed_pillow_n / max(total_pillow_n, 1)
+        n_window_blocked = _window_blocked_cells(
+            self.win_wall, self.win_pos, self.win_w, rw, rh, self.grid, pl)
+        window_strip_cells = self.win_w * 2          # 2-deep strip in front of window
+        window_ratio = n_window_blocked / max(window_strip_cells, 1)
 
-        waste = 0.0
         unreachable = 0
+        total_empty = rw * rh
+        waste_ratio = 0.0
         if pl:
-            empty = int((self.grid[:rh, :rw] == 0).sum())
-            unreachable = empty - len(swept)
-            waste = round(unreachable * WCOEFF * 10) / 10
+            total_empty = int((self.grid[:rh, :rw] == 0).sum())
+            unreachable = max(0, total_empty - len(swept))
+            waste_ratio = unreachable / max(total_empty, 1)
 
-        total = round((availability - discomfort - waste) * 10) / 10
+        # ── multiplicative combination ──
+        D_total = PILLOW_W * pillow_ratio + WINDOW_W * window_ratio
+        comfort   = math.exp(-D_total    / D_TAU)
+        waste_eff = math.exp(-waste_ratio / W_TAU)
+        total = round(availability * comfort * waste_eff * 10) / 10
+
+        # Express the multiplicative discounts as additive "points lost" so the
+        # downstream display (right panel) still reads naturally as A − D − W.
+        discount_d = round(availability * (1.0 - comfort) * 10) / 10
+        discount_w = round(availability * comfort * (1.0 - waste_eff) * 10) / 10
+
         self._last_breakdown = {
-            "availability": round(availability * 10) / 10,
-            "discomfort": round(discomfort * 10) / 10,
-            "waste": waste,
-            "total": total,
-            "per_item": per_item,
-            "exposed_cells": len(exposed),         # count
-            "exposed": exposed,                    # list[(x, y)] for rendering
-            "total_bed_cells": total_bed,
-            "bed_exposure_score": bed_exp,
-            "pillow_seen": pillow_seen,
-            "window_blocked": window_blocked,
+            # Top-level (additive interpretation for compatibility with old plots)
+            "availability":      round(availability * 10) / 10,
+            "discomfort":        discount_d,
+            "waste":             discount_w,
+            "total":             total,
+            "per_item":          per_item,
+            # v3 native fields
+            "comfort":           round(comfort * 1000) / 1000,
+            "waste_eff":         round(waste_eff * 1000) / 1000,
+            "pillow_ratio":      round(pillow_ratio * 1000) / 1000,
+            "window_ratio":      round(window_ratio * 1000) / 1000,
+            "waste_ratio":       round(waste_ratio * 1000) / 1000,
+            "d_total":           round(D_total * 1000) / 1000,
+            # Counts (used for in-panel "X / Y" display)
+            "n_exposed_pillow":  exposed_pillow_n,
+            "total_pillow_cells": total_pillow_n,
+            "n_window_blocked":  n_window_blocked,
+            "window_strip_cells": window_strip_cells,
             "unreachable_cells": unreachable,
-            "swept": swept,                        # set[(x, y)] for rendering
-            "door_center": (dcx, dcy, fac),
+            "total_empty_cells": total_empty,
+            # Bed-cone visualization (still used by render.py overlay)
+            "exposed_cells":     len(exposed),
+            "exposed":           exposed,
+            "total_bed_cells":   total_bed,
+            "bed_exposure_score": 0.0,                # deprecated under v3
+            # Booleans (back-compat)
+            "pillow_seen":       exposed_pillow_n > 0,
+            "window_blocked":    n_window_blocked > 0,
+            # Cone overlay
+            "swept":             swept,
+            "door_center":       (dcx, dcy, fac),
         }
         return float(total)
 
@@ -624,8 +728,10 @@ def _bresenham_blocked(x0: int, y0: int, x1: int, y1: int,
     return False
 
 
-def _window_blocked(wall: str, wp: int, ww: int, rw: int, rh: int,
-                    grid: np.ndarray, pl: list[Placement]) -> bool:
+def _window_blocked_cells(wall: str, wp: int, ww: int, rw: int, rh: int,
+                          grid: np.ndarray, pl: list[Placement]) -> int:
+    """Count cells in the 2-deep window strip occupied by bed/wardrobe."""
+    n = 0
     for wi in range(ww):
         for wd in range(2):
             if wall == "top":      wx, wy = wp + wi, wd
@@ -635,5 +741,10 @@ def _window_blocked(wall: str, wp: int, ww: int, rw: int, rh: int,
             if 0 <= wx < rw and 0 <= wy < rh and grid[wy, wx] != 0:
                 occ = _furniture_at(pl, wx, wy)
                 if occ is not None and CATALOG[occ.fid].cat in ("bed", "wardrobe"):
-                    return True
-    return False
+                    n += 1
+    return n
+
+
+def _window_blocked(wall, wp, ww, rw, rh, grid, pl) -> bool:
+    """Back-compat wrapper: True iff any cell is blocked."""
+    return _window_blocked_cells(wall, wp, ww, rw, rh, grid, pl) > 0
