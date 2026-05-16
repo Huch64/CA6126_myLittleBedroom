@@ -6,7 +6,8 @@ For each of several policies (random under action mask + DONE-immediate +
 hand-written greedy) we run N rollouts and dump:
 
   • histogram of total reward
-  • mean / std / quantiles per component (availability / discomfort / waste)
+  • mean / std / quantiles per component
+    (availability / privacy_loss / light_loss / waste_loss)
   • DONE-trap gap: mean(greedy) − reward(DONE)
   • per-cell sensitivity: shift one bed placement by ±1, ±2, ±3 cells and
     report how much the reward moves (verifies continuity)
@@ -130,12 +131,13 @@ def rollout(env, policy, rng) -> dict:
     return {
         "total":         bd["total"],
         "availability":  bd["availability"],
-        "discomfort":    bd["discomfort"],
-        "waste":         bd["waste"],
+        "privacy_loss":  bd["privacy_loss"],
+        "light_loss":    bd["light_loss"],
+        "waste_loss":    bd["waste_loss"],
+        "privacy":       bd["privacy"],
+        "light":         bd["light"],
+        "efficiency":    bd["efficiency"],
         "n_placed":      info.get("placed", 0),
-        "bed_exp_score": bd.get("bed_exposure_score", 0),
-        "pillow_pen":    bd.get("pillow_penalty", 0),
-        "window_pen":    bd.get("window_penalty", 0),
     }
 
 
@@ -181,9 +183,9 @@ def describe(name: str, data: dict[str, np.ndarray]) -> None:
     print(f"\n── {name:>15s}  (n={len(t)}) ──")
     print(f"  total:        mean={t.mean():+6.2f}  std={t.std():5.2f}  "
           f"min={t.min():+6.2f}  median={np.median(t):+6.2f}  max={t.max():+6.2f}")
-    for k in ("availability", "discomfort", "waste"):
+    for k in ("availability", "privacy_loss", "light_loss", "waste_loss"):
         v = data[k]
-        print(f"  {k:<12s}  mean={v.mean():6.2f}  std={v.std():5.2f}  "
+        print(f"  {k:<14s}  mean={v.mean():6.2f}  std={v.std():5.2f}  "
               f"max={v.max():6.2f}")
     print(f"  n_placed:     mean={data['n_placed'].mean():.2f}   "
           f"frac(n_placed==0): {(data['n_placed']==0).mean():.1%}")
@@ -210,37 +212,38 @@ def plot_audit(per_policy: dict[str, dict], save_path: Path) -> None:
 
     # 2) Component means (bar comparison)
     ax = axes[0, 1]
-    components = ["availability", "discomfort", "waste"]
+    components = ["availability", "privacy_loss", "light_loss", "waste_loss"]
     names = list(per_policy.keys())
     x = np.arange(len(components))
     width = 0.25
     for i, name in enumerate(names):
         means = [per_policy[name][k].mean() for k in components]
-        # discomfort and waste are subtracted in `total`; plot signed
-        signed = [means[0], -means[1], -means[2]]
+        # losses are subtracted from availability in `total`; plot signed
+        signed = [means[0], -means[1], -means[2], -means[3]]
         ax.bar(x + i * width, signed, width, label=name,
                color=colors.get(name, "#777"))
     ax.set_xticks(x + width)
-    ax.set_xticklabels(["+A", "−D", "−W"])
+    ax.set_xticklabels(["+A", "−privacy", "−light", "−waste"])
     ax.set_title("Mean component contribution to total")
     ax.axhline(0, color="#333", lw=0.6, linestyle="--")
     ax.legend(frameon=False)
 
-    # 3) Per-cell discomfort components under random
+    # 3) Per-factor discount under random policy
     ax = axes[1, 0]
     rand = per_policy["random"]
     parts = {
-        "bed exposure":  rand["bed_exp_score"],
-        "pillow penalty": rand["pillow_pen"],
-        "window penalty": rand["window_pen"],
-        "waste":         rand["waste"],
+        "privacy":    rand["privacy"],
+        "light":      rand["light"],
+        "efficiency": rand["efficiency"],
     }
     labels = list(parts.keys())
     means = [parts[k].mean() for k in labels]
     stds  = [parts[k].std() for k in labels]
     ax.bar(labels, means, yerr=stds, capsize=4, color="#4477aa")
-    ax.set_title("Per-component penalty under random policy (mean ± std)")
-    ax.set_ylabel("reward subtracted")
+    ax.set_ylim(0, 1.05)
+    ax.axhline(1.0, color="#999", lw=0.6, linestyle="--")
+    ax.set_title("Per-factor discount under random policy (mean ± std)")
+    ax.set_ylabel("× factor (1 = no discount)")
     ax.tick_params(axis="x", rotation=15)
 
     # 4) Continuity test: reward vs bed x-offset

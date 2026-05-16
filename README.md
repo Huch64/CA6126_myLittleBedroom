@@ -1,7 +1,8 @@
 # 🏠 My Little Bedroom — CA6126 RL Final Project
 
 > A MaskablePPO agent learns to furnish a randomized bedroom.
-> Reward: `R = Availability × comfort × waste_efficiency`   (multiplicative, ratio-based — v3, see [spec](my_little_bedroom_spec.md))
+> Reward: `R = A × privacy × light × efficiency`
+> &nbsp;&nbsp;each factor a `1 − ratio` discount in [0, 1] — see [spec](my_little_bedroom_spec.md))
 
 Full MDP spec: [`my_little_bedroom_spec.md`](my_little_bedroom_spec.md)
 Interactive reward reference (open in a browser): [`my_little_bedroom.html`](my_little_bedroom.html)
@@ -54,6 +55,7 @@ tensorboard --logdir runs/
 | 🚂 `train.py` | MaskablePPO training + CSV/TB logging + best-model saving | ✅ |
 | 🎬 `render.py` | Record agent playing to mp4 (random or trained policy) | ✅ |
 | 📈 `plot_training.py` | Generate report figures from `runs/<name>/` logs | ✅ |
+| 👥 `TEAMMATE.md` | Quick-start for collaborators — what to run, what to monitor, what to tune | ✅ |
 | 📊 `report.pptx` | Slides (≤ 20 pages) | ⬜ TODO |
 
 Generated at runtime (gitignored):
@@ -144,12 +146,11 @@ python reward_audit.py --n 2000 --save plots/audit.png
 Healthy signs to look for:
 - Reward distribution roughly unimodal (no clumps at single value)
 - DONE-trap gap > 0 (any "play" policy ≥ DONE-immediate)
-- No single component dominates (waste mean ≈ discomfort mean order of magnitude)
+- No single factor dominates the discount (privacy / light / efficiency means in the same order of magnitude)
 - Continuity sweep smooth (no cliffs)
 
 ## ❓ Open Issues to Watch
 
-- **TAU tuning**: `D_TAU=1.0`, `W_TAU=0.5` are first-pass. If training plateaus, try `D_TAU=2.0` (more forgiving — `comfort` decays slower) or `0.5` (more demanding).
 - **PPO failure modes** even with v3:
   - If `episodes.csv` shows `n_placed` stuck low, try `--ent-coef 0.05` (more exploration)
   - The training pipeline still supports `--placement-bonus X` (dense per-placement reward as further insurance — kept for backwards compat with v1/v2 runs)

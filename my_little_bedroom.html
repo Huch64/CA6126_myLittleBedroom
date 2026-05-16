@@ -20,10 +20,12 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 var useState=React.useState,useMemo=React.useMemo,useCallback=React.useCallback;
 var GRID=0.15,GW=26,GH=22,CELL=18,DW=6,WW=12,WT=CELL,WCOEFF=0.2;
 // Reward v3 (multiplicative, ratio-based) — matches env.py
+// R = A × privacy × light × efficiency
+//   privacy    = 1 − pillow_ratio    (door can't peek at pillow)
+//   light      = 1 − window_ratio    (window not blocked)
+//   efficiency = 1 − waste_ratio     (room walkable)
 var AVAIL_FACTOR={bed:0.32,desk:0.43,wardrobe:0.33,cabinet:0.37,nightstand:0.29};
 var NS_PAIR_BONUS=1.0;
-var PILLOW_W=2.0, WINDOW_W=1.0;
-var D_TAU=1.0, W_TAU=0.5;
 var GRAY="#999",LEM="#FFE500",WALLC="#C8C4BE";
 var CC={bed:"#45D468",desk:"#30D4A0",wardrobe:"#30A8D4",cabinet:"#5050D4",nightstand:"#9530D4"};
 var MAXC={bed:1,desk:1,wardrobe:1,cabinet:1,nightstand:2};
@@ -32,7 +34,7 @@ var CAT=[
   {n:"Bed 0.9",c:"bed",w:14,h:6,v:3,pl:1,zd:3,z3:1},{n:"Bed 1.2",c:"bed",w:14,h:8,v:3.5,pl:1,zd:3,z3:1},{n:"Bed 1.5",c:"bed",w:14,h:10,v:4,pl:2,zd:3,z3:1},{n:"Bed 1.8",c:"bed",w:14,h:12,v:4,pl:2,zd:3,z3:1},
   {n:"Desk S",c:"desk",w:6,h:4,v:2.5,zd:5},{n:"Desk L",c:"desk",w:8,h:4,v:3,zd:5},{n:"Desk XL",c:"desk",w:12,h:4,v:3,zd:5},
   {n:"Wardrobe S",c:"wardrobe",w:6,h:4,v:1.5,zd:4},{n:"Wardrobe M",c:"wardrobe",w:8,h:4,v:2,zd:4},{n:"Wardrobe L",c:"wardrobe",w:10,h:4,v:2,zd:4},{n:"Wardrobe XL",c:"wardrobe",w:12,h:4,v:2.5,zd:4},{n:"Wardrobe XXL",c:"wardrobe",w:14,h:4,v:2.5,zd:4},
-  {n:"Cabinet S",c:"cabinet",w:4,h:3,v:1,zd:4},{n:"Cabinet M",c:"cabinet",w:6,h:3,v:1.5,zd:4},{n:"Cabinet L",c:"cabinet",w:8,h:3,v:1.5,zd:4},{n:"Cabinet XL",c:"cabinet",w:10,h:3,v:2,zd:4},
+  {n:"Cabinet S",c:"cabinet",w:4,h:3,v:1,zd:3},{n:"Cabinet M",c:"cabinet",w:6,h:3,v:1.5,zd:3},{n:"Cabinet L",c:"cabinet",w:8,h:3,v:1.5,zd:3},{n:"Cabinet XL",c:"cabinet",w:10,h:3,v:2,zd:3},
   {n:"Nightstand A",c:"nightstand",w:4,h:3,v:1,zd:3},{n:"Nightstand B",c:"nightstand",w:3,h:3,v:1,zd:3}];
 var CATS=["bed","desk","wardrobe","cabinet","nightstand"];
 function gfp(s,o){return(o===1||o===3)?{w:s.h,h:s.w}:{w:s.w,h:s.h};}
@@ -87,17 +89,19 @@ function calc(pl,dw,dp,grid,ww,wp,rw,rh,wWidth){var sw=pl.length>0?flood(grid,dw
   for(var wi=0;wi<wWidth;wi++){for(var wd=0;wd<2;wd++){var wx,wy;if(ww==="top"){wx=wp+wi;wy=wd;}else if(ww==="bottom"){wx=wp+wi;wy=rh-1-wd;}else if(ww==="left"){wy=wp+wi;wx=wd;}else{wy=wp+wi;wx=rw-1-wd;}if(inR(wx,wy,rw,rh)&&grid[wy][wx]===1){var oc2=fatAt(pl,wx,wy);if(oc2){var pc2=CAT[oc2.fid].c;if(pc2==="bed"||pc2==="wardrobe"){wbn++;if(!wBkr)wBkr=oc2;}}}}}
   var winStrip=wWidth*2;
   var windowRatio=winStrip>0?wbn/winStrip:0;
-  var dTotal=PILLOW_W*pillowRatio+WINDOW_W*windowRatio;
-  var comfort=Math.exp(-dTotal/D_TAU);
+  var privacy=1-pillowRatio;
+  var light=1-windowRatio;
   var unr=0,te=0,wasteRatio=0;
   if(pl.length>0){for(var iy=0;iy<rh;iy++)for(var ix=0;ix<rw;ix++)if(grid[iy][ix]===0)te++;unr=Math.max(0,te-sw.size);wasteRatio=te>0?unr/te:0;}
-  var wasteEff=Math.exp(-wasteRatio/W_TAU);
-  var tot=Math.round(av*comfort*wasteEff*10)/10;
-  var discAmt=Math.round(av*(1-comfort)*10)/10;
-  var wstAmt=Math.round(av*comfort*(1-wasteEff)*10)/10;
-  var dd="pillow "+pen+"/"+tpn+" ("+(pillowRatio*100).toFixed(0)+"%)"+" \u00b7 win "+wbn+"/"+winStrip+" ("+(windowRatio*100).toFixed(0)+"%) \u2192 \u00d7"+comfort.toFixed(2);
-  var wd=unr+"/"+te+" ("+(wasteRatio*100).toFixed(0)+"%) \u2192 \u00d7"+wasteEff.toFixed(2);
-  return{av:Math.round(av*10)/10,disc:discAmt,wst:wstAmt,tot:tot,aP:aP.join("  "),dd:dd,wd:wd,exp:exp,sw:sw,aZ:aZ,wBkr:wBkr,dcx:dcx,dcy:dcy,fac:fac,comfort:comfort,wasteEff:wasteEff,pillowRatio:pillowRatio,windowRatio:windowRatio,wasteRatio:wasteRatio};}
+  var efficiency=1-wasteRatio;
+  var tot=Math.round(av*privacy*light*efficiency*10)/10;
+  var privAmt=Math.round(av*(1-privacy)*10)/10;
+  var lightAmt=Math.round(av*privacy*(1-light)*10)/10;
+  var wstAmt=Math.round(av*privacy*light*(1-efficiency)*10)/10;
+  var pd="pillow "+pen+"/"+tpn+" ("+(pillowRatio*100).toFixed(0)+"%) \u2192 \u00d7"+privacy.toFixed(2);
+  var ld="win "+wbn+"/"+winStrip+" ("+(windowRatio*100).toFixed(0)+"%) \u2192 \u00d7"+light.toFixed(2);
+  var wd=unr+"/"+te+" ("+(wasteRatio*100).toFixed(0)+"%) \u2192 \u00d7"+efficiency.toFixed(2);
+  return{av:Math.round(av*10)/10,priv:privAmt,lig:lightAmt,wst:wstAmt,tot:tot,aP:aP.join("  "),pd:pd,ld:ld,wd:wd,exp:exp,sw:sw,aZ:aZ,wBkr:wBkr,dcx:dcx,dcy:dcy,fac:fac,privacy:privacy,light:light,efficiency:efficiency,pillowRatio:pillowRatio,windowRatio:windowRatio,wasteRatio:wasteRatio};}
 function Thumb(p){var s=1.5;return <svg width={Math.max(p.w*s+2,8)} height={Math.max(p.h*s+2,8)} style={{marginRight:3,flexShrink:0}}><rect x={1} y={1} width={p.w*s} height={p.h*s} fill={p.color} rx={1} opacity={0.7}/></svg>;}
 
 function App(){
@@ -130,8 +134,9 @@ function App(){
   // Highlights
   var hlE=[];
   if(hlM==="avail"){for(var ai=0;ai<rw.aZ.length;ai++){var az=rw.aZ[ai];if(inR(az[0],az[1],rW,rH))hlE.push(<rect key={"a"+ai} x={az[0]*CELL+1} y={az[1]*CELL+1} width={CELL-2} height={CELL-2} fill={LEM} opacity={0.4} rx={1}/>);}}
-  else if(hlM==="disc"){var cL=Math.max(rW,rH)*CELL,a1=rw.fac-Math.PI/4,a2=rw.fac+Math.PI/4;hlE.push(<line key="c1" x1={rw.dcx*CELL} y1={rw.dcy*CELL} x2={rw.dcx*CELL+Math.cos(a1)*cL} y2={rw.dcy*CELL+Math.sin(a1)*cL} stroke={LEM} strokeWidth={1} opacity={0.4} strokeDasharray="4,3"/>);hlE.push(<line key="c2" x1={rw.dcx*CELL} y1={rw.dcy*CELL} x2={rw.dcx*CELL+Math.cos(a2)*cL} y2={rw.dcy*CELL+Math.sin(a2)*cL} stroke={LEM} strokeWidth={1} opacity={0.4} strokeDasharray="4,3"/>);for(var ei=0;ei<rw.exp.length;ei++){var ec=rw.exp[ei];hlE.push(<rect key={"e"+ei} x={ec[0]*CELL+1} y={ec[1]*CELL+1} width={CELL-2} height={CELL-2} fill={LEM} opacity={0.65} rx={1}/>);}if(rw.wBkr){var wb=rw.wBkr;hlE.push(<rect key="wb" x={wb.x*CELL} y={wb.y*CELL} width={wb.fw*CELL} height={wb.fh*CELL} fill={LEM} opacity={0.35} rx={2}/>);}}
-  else if(hlM==="waste"){rw.sw.forEach(function(k){var p=k.split(",");hlE.push(<rect key={"s"+k} x={(+p[0])*CELL+.5} y={(+p[1])*CELL+.5} width={CELL-1} height={CELL-1} fill={LEM} opacity={0.25} rx={.5}/>);});}
+  else if(hlM==="priv"){var cL=Math.max(rW,rH)*CELL,a1=rw.fac-Math.PI/4,a2=rw.fac+Math.PI/4;hlE.push(<line key="c1" x1={rw.dcx*CELL} y1={rw.dcy*CELL} x2={rw.dcx*CELL+Math.cos(a1)*cL} y2={rw.dcy*CELL+Math.sin(a1)*cL} stroke={LEM} strokeWidth={1} opacity={0.4} strokeDasharray="4,3"/>);hlE.push(<line key="c2" x1={rw.dcx*CELL} y1={rw.dcy*CELL} x2={rw.dcx*CELL+Math.cos(a2)*cL} y2={rw.dcy*CELL+Math.sin(a2)*cL} stroke={LEM} strokeWidth={1} opacity={0.4} strokeDasharray="4,3"/>);for(var ei=0;ei<rw.exp.length;ei++){var ec=rw.exp[ei];hlE.push(<rect key={"e"+ei} x={ec[0]*CELL+1} y={ec[1]*CELL+1} width={CELL-2} height={CELL-2} fill={LEM} opacity={0.65} rx={1}/>);}}
+  else if(hlM==="lig"){if(rw.wBkr){var wb=rw.wBkr;hlE.push(<rect key="wb" x={wb.x*CELL} y={wb.y*CELL} width={wb.fw*CELL} height={wb.fh*CELL} fill={LEM} opacity={0.5} rx={2}/>);}}
+  else if(hlM==="eff"){rw.sw.forEach(function(k){var p=k.split(",");hlE.push(<rect key={"s"+k} x={(+p[0])*CELL+.5} y={(+p[1])*CELL+.5} width={CELL-1} height={CELL-1} fill={LEM} opacity={0.25} rx={.5}/>);});}
   // Zones, fronts, bodies
   var zE=[],fE=[];for(var pi=0;pi<pl.length;pi++){var pp=pl[pi],pcc=CC[CAT[pp.fid].c],sp2=CAT[pp.fid],ppx=pp.x*CELL,ppy=pp.y*CELL,ppw=pp.fw*CELL,pph=pp.fh*CELL,wh="rgba(255,255,255,0.5)";
     var zR2=zoneRects(pp);for(var zi2=0;zi2<zR2.length;zi2++){var z2=zR2[zi2];zE.push(<rect key={"z"+pp.id+"_"+zi2} x={z2.x*CELL+1} y={z2.y*CELL+1} width={z2.w*CELL-2} height={z2.h*CELL-2} fill="none" stroke={pcc} strokeWidth={0.8} strokeDasharray="2,2" opacity={0.3} rx={1}/>);}
@@ -159,7 +164,7 @@ function App(){
   return(<div style={{padding:24,display:"flex",justifyContent:"center"}}>
     <div style={{maxWidth:1020}}>
       <h1 style={{fontSize:28,fontWeight:700,fontStyle:"italic",color:"#C03030",margin:"0 0 1px",fontFamily:"Georgia,serif"}}>my little bedroom</h1>
-      <p style={{fontSize:10,color:"#aaa",margin:"0 0 14px"}}>MDP: state = grid · action = place furniture · R = Availability - Discomfort - Waste</p>
+      <p style={{fontSize:10,color:"#aaa",margin:"0 0 14px"}}>MDP: state = grid · action = place furniture · R = A × privacy × light × efficiency</p>
       <div style={{display:"flex",gap:16}}>
         <div>
           <svg width={svgW+WT*2} height={svgH+WT*2} style={{background:"#fff",display:"block"}} onMouseMove={onMove} onMouseLeave={function(){setHov(null);}} onWheel={onWheel}>
@@ -175,7 +180,7 @@ function App(){
             <div className="card-title">Reward</div>
             <div className="card-hint">click each row to visualize</div>
             <div style={{fontFamily:"monospace",fontSize:11}}>
-              {[["avail","Availability",rw.av,rw.aP,"+",false],["disc","Discomfort",rw.disc,rw.dd,"\u2212",true],["waste","Waste",rw.wst,rw.wd,"\u2212",true]].map(function(r){return <div key={r[0]} onClick={function(){setHlM(hlM===r[0]?null:r[0]);}} style={{display:"flex",alignItems:"center",padding:"5px 6px",marginBottom:2,cursor:"pointer",borderRadius:4,background:hlM===r[0]?LEM+"25":"transparent"}}><span style={{color:"#444",fontWeight:700,minWidth:90,fontSize:12}}>{r[1]}</span><span style={{color:"#aaa",fontSize:9,flex:1,marginLeft:8,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{r[3]}</span><span style={{fontWeight:700,color:r[5]?"#c44":"#333",minWidth:40,textAlign:"right",fontSize:13}}>{r[5]&&r[2]>0?r[4]+r[2]:r[4]+r[2]}</span></div>;})}
+              {[["avail","Availability","+"+rw.av,rw.aP,false,1],["priv","Privacy","\u00d7"+rw.privacy.toFixed(2),rw.pd,true,rw.privacy],["lig","Light","\u00d7"+rw.light.toFixed(2),rw.ld,true,rw.light],["eff","Efficiency","\u00d7"+rw.efficiency.toFixed(2),rw.wd,true,rw.efficiency]].map(function(r){return <div key={r[0]} onClick={function(){setHlM(hlM===r[0]?null:r[0]);}} style={{display:"flex",alignItems:"center",padding:"5px 6px",marginBottom:2,cursor:"pointer",borderRadius:4,background:hlM===r[0]?LEM+"25":"transparent"}}><span style={{color:"#444",fontWeight:700,minWidth:90,fontSize:12}}>{r[1]}</span><span style={{color:"#aaa",fontSize:9,flex:1,marginLeft:8,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{r[3]}</span><span style={{fontWeight:700,color:r[4]&&r[5]<1?"#c44":"#333",minWidth:50,textAlign:"right",fontSize:13}}>{r[2]}</span></div>;})}
               <div style={{display:"flex",alignItems:"center",padding:"5px 6px",borderTop:"1px solid #eee",marginTop:2}}><span style={{fontWeight:700,color:"#333",fontSize:13}}>Total</span><span style={{marginLeft:"auto",fontSize:22,fontWeight:700,fontFamily:"Georgia,serif"}}>{rw.tot}</span></div>
             </div>
           </div>

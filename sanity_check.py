@@ -42,7 +42,7 @@ def smoke_shapes() -> None:
 
 
 def scripted_episode() -> None:
-    """Hand-crafted placement to read off A/D/W on the report."""
+    """Hand-crafted placement; prints availability + each (1 − ratio) factor."""
     env = MyLittleBedroom(seed=42, max_steps=8)
     obs, info = env.reset(seed=42)
     rw, rh = info["room"]
@@ -78,8 +78,9 @@ def scripted_episode() -> None:
     obs, reward, term, trunc, info = env.step(ACTION_DONE)
     bd = env._last_breakdown
     print(f"[scripted] placed {len(placed_idx_set)} items -> reward={reward}")
-    print(f"           availability={bd['availability']} "
-          f"discomfort={bd['discomfort']} waste={bd['waste']}")
+    print(f"           availability={bd['availability']}  "
+          f"×privacy={bd['privacy']:.2f}  ×light={bd['light']:.2f}  "
+          f"×efficiency={bd['efficiency']:.2f}")
     print(f"           per_item={bd['per_item']}")
     print(f"           exposed={bd['exposed_cells']}/{bd['total_bed_cells']} "
           f"pillow_seen={bd['pillow_seen']} unreachable={bd['unreachable_cells']}c")

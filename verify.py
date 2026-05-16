@@ -1,9 +1,9 @@
 """Verify env.py matches my_little_bedroom.html.
 
 For each case below the script prints (a) exact HTML setup steps and
-(b) the env's computed Availability / Discomfort / Waste. Open the HTML
-in a browser, replicate the setup, click each reward row to highlight,
-and compare the three numbers.
+(b) the env's computed Availability / Privacy / Light / Efficiency factors.
+Open the HTML in a browser, replicate the setup, click each reward row
+to highlight, and compare the four numbers.
 
 Run:
     python verify.py              # run all cases
@@ -64,7 +64,7 @@ CASES: list[Case] = [
         name="wardrobe blocking the window",
         description=(
             "Wardrobe M (8×4) at top wall y=0..3. Window is centered on top "
-            "wall (50% of room_w). Expect window penalty +3 in Discomfort."
+            "wall (50% of room_w). Expect non-trivial window_ratio → Light < 1."
         ),
         room_w=20, room_h=20, door_pos=7, win_wall="top",
         placements=[
@@ -112,13 +112,16 @@ def run_case(case: Case) -> None:
         env.step(a)
     env.step(ACTION_DONE)
     bd = env._last_breakdown
-    print(f"env result:  A={bd['availability']:<5}  D={bd['discomfort']:<5}  "
-          f"W={bd['waste']:<5}  total={bd['total']}")
+    print(f"env result:  A={bd['availability']:<5}  "
+          f"×privacy={bd['privacy']:.2f}  ×light={bd['light']:.2f}  "
+          f"×efficiency={bd['efficiency']:.2f}  →  total={bd['total']}")
+    print(f"             losses: privacy={bd['privacy_loss']} "
+          f"light={bd['light_loss']} waste={bd['waste_loss']}")
     print(f"             per_item={bd['per_item']}")
     print(f"             bed_exposed={bd['exposed_cells']}/{bd['total_bed_cells']} "
           f"pillow_seen={bd['pillow_seen']} unreachable={bd['unreachable_cells']}")
-    print("verify in HTML: click each reward row (Availability / Discomfort / "
-          "Waste) — yellow highlights should match the counts above.")
+    print("verify in HTML: click each reward row (Availability / Privacy / "
+          "Light / Efficiency) — yellow highlights should match the counts above.")
 
 
 def main() -> None:

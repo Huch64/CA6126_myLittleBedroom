@@ -1,12 +1,16 @@
 # 🏠 My Little Bedroom — Final Spec
 
 > CA6126 RL Final Project · MaskablePPO agent learns to furnish a randomized bedroom
-> 
-> `R = Availability × comfort × waste_efficiency`   (multiplicative, ratio-based)
 >
-> The interactive HTML preview uses the original additive `R = A − D − W`
-> (kept as a reference). The trained env (`env.py`) uses the v3 multiplicative
-> form — see § *Reward (v3)* below.
+> `R = A × privacy × light × efficiency`
+> &nbsp;&nbsp;`privacy = 1 − pillow_ratio` · `light = 1 − window_ratio` · `efficiency = 1 − waste_ratio`
+>
+> Both `env.py` and the interactive HTML preview implement this v3 reward.
+> Every penalty is a fraction of its relevant resource in [0, 1], so each
+> `(1 − ratio)` is an independent "discount factor" in [0, 1] — zero
+> weights, zero τ, every term has one physical meaning. Earlier additive
+> forms (v1, v2) are documented in the *v1 → v3 evolution* table for the
+> report's reward-engineering section.
 
 ---
 
@@ -67,37 +71,67 @@ Most actions masked (overlap / out of bounds / door swing)
 
 Deterministic. Furniture placed permanently. DONE ends episode.
 
+### 📏 State / action space size
+
+**Initial state space** (room configurations sampled at every `reset()`):
+
+| Element | Domain | Count |
+|---|---|---|
+| `room_w` | 14–26 (integer) | 13 |
+| `room_h` | 18–22 (integer) | 5 |
+| `door_pos` | 0 … room_w − 6 | avg ≈ 15 |
+| `win_wall` | {top, left, right} | 3 |
+
+Window pos/width are derived (centered, 50% of wall length), so they don't
+add cardinality. Total initial configurations: **13 × 5 × ~15 × 3 ≈ 2 900**.
+
+**Reachable state space** (after placements) — combinatorial in the number
+of placements and their positions. With up to 6 items × ~thousand valid
+positions each, the trajectory space is astronomical (~10²⁰ episodes), but
+the agent only needs to learn a policy over the ~2 900 root configs.
+
+**Action space**: `Discrete(41 185)` = 18 furniture × 26 × 22 grid × 4
+orientations + 1 DONE. Per step, the action mask typically leaves
+**10 000 – 16 000 valid actions**; PPO samples only from these via
+`sb3-contrib`'s `MaskablePPO`.
+
 ### Reward *R*  (v3: multiplicative, ratio-based)
 
 Computed once at episode end:
 
 ```
-R = Availability × comfort × waste_efficiency
+R = Availability × privacy × light × efficiency
 
-  comfort           = exp(− D_total  / D_TAU)
-  waste_efficiency  = exp(− waste_ratio / W_TAU)
-  D_total           = PILLOW_W × pillow_ratio + WINDOW_W × window_ratio
+  privacy    = 1 − pillow_ratio    (door can't peek at pillow)
+  light      = 1 − window_ratio    (window not blocked)
+  efficiency = 1 − waste_ratio     (room is walkable)
 ```
 
-All penalties are **dimensionless ratios in [0, 1]** — they express the
-fraction of the affected resource (pillow cells visible from door, window
-cells blocked, empty room cells unreachable). Penalties act as **bounded
-multipliers** on availability rather than unbounded subtractors. This gives
-two crucial properties:
+Four factors, zero weights, zero τ, no transcendentals. Each ratio is a
+fraction of its relevant resource in [0, 1], so the corresponding
+`(1 − ratio)` is automatically a discount in [0, 1] with **one physical
+meaning per factor**:
 
-1. **Scale-invariant**: same ratio = same effect across all room sizes.
-2. **No DONE-trap**: R = 0 iff Availability = 0 (i.e. DONE-immediate). Any
-   placement → R > 0, eliminating the "do nothing is safer" local optimum.
+- pillow fully exposed (`pillow_ratio = 1`) → privacy = 0 → R = 0
+- half the window blocked (`window_ratio = 0.5`) → ×0.5
+- 20 % dead space (`waste_ratio = 0.2`) → efficiency = ×0.8
+- all three combine multiplicatively, no clamping needed
+
+Two key properties:
+
+1. **Scale-invariant**: ratios cancel cell counts, so the same ratio means
+   the same effect across all room sizes — no per-room tuning.
+2. **No DONE-trap**: R = 0 iff Availability = 0 (DONE-immediate) or some
+   ratio hits 1. Any sensible placement → R > 0, so "do nothing" is never
+   the locally safe choice.
 
 Defaults in `env.py`:
 
 ```python
 AVAIL_FACTOR = {"bed": 0.32, "desk": 0.43, "wardrobe": 0.33,
                 "cabinet": 0.37, "nightstand": 0.29}
-PILLOW_W = 2.0     # privacy weighted higher than window
-WINDOW_W = 1.0
-D_TAU = 1.0        # D_total = 1 ⇒ comfort = 1/e ≈ 0.37
-W_TAU = 0.5        # waste_ratio = 0.5 ⇒ waste_eff = 1/e ≈ 0.37
+NIGHTSTAND_PAIR_BONUS = 1.0   # absolute bonus when paired with headboard
+# No weights, no τ — each (1 − ratio) is an independent discount factor.
 ```
 
 ---
@@ -123,21 +157,20 @@ Functional zones:
 | 🛏️ Bed | 3 (two long sides + foot) | 3 cells | ≥ 1 long side accessible, nightstand allowed |
 | 🖥️ Desk | 1 front | 5 cells | Fully clear (includes chair space) |
 | 👔 Wardrobe | 1 front | 4 cells | Fully clear |
-| 🗄️ Cabinet | 1 front | 4 cells | Fully clear |
+| 🗄️ Cabinet | 1 front | 3 cells | Fully clear |
 | 🛋️ Nightstand | 1 front | 3 cells | Fully clear |
 
 **Nightstand pairing**: on bed's long side + aligned with headboard → **+1 bonus** (absolute), unpaired → ×0.5 multiplier.
 
-### 😰 Discomfort  →  comfort = exp(− D_total / D_TAU)
+### 👀 Privacy  →  privacy = (1 − pillow_ratio)
 
 ```
-D_total = PILLOW_W × pillow_ratio + WINDOW_W × window_ratio
+pillow_ratio = exposed_pillow_cells / total_pillow_cells
 ```
 
-| Component | Ratio | Description |
-|-----------|-------|-------------|
-| 👀 pillow_ratio  | exposed_pillow_cells / total_pillow_cells   | Fraction of pillow cells visible from door's 90° cone, unblocked by wardrobe |
-| 🪟 window_ratio  | blocked_window_cells / window_strip_cells   | Fraction of the 2-deep window strip occupied by bed/wardrobe |
+Fraction of pillow cells visible from door's 90° cone, unblocked by
+wardrobe. Pillow fully hidden → privacy = 1 (no discount). Pillow fully
+exposed → privacy = 0 → R = 0.
 
 **Bed body exposure (excluding pillow) is intentionally NOT penalised** —
 in real design, privacy concerns the head end (where the pillow is), not
@@ -145,7 +178,17 @@ the side of the bed.
 
 Only **wardrobe** blocks line of sight to bed (other furniture too short).
 
-### 🗑️ Waste  →  waste_efficiency = exp(− waste_ratio / W_TAU)
+### 🪟 Light  →  light = (1 − window_ratio)
+
+```
+window_ratio = blocked_window_cells / window_strip_cells
+```
+
+Fraction of the 2-deep window strip occupied by tall furniture
+(bed/wardrobe). Window strip fully clear → light = 1. Half blocked →
+light = 0.5.
+
+### 🗑️ Efficiency  →  efficiency = (1 − waste_ratio)
 
 ```
 waste_ratio = unreachable_cells / total_empty_cells
@@ -156,16 +199,16 @@ cannot reach. Expressed as a fraction of total empty cells, so a tightly
 packed room with a few stranded corners ranks just as well as a sparse
 room with a similar proportion unreachable.
 
-No furniture placed → ratio = 0 → waste_eff = 1 (no penalty), but
+No furniture placed → ratio = 0 → efficiency = 1 (no penalty), but
 availability = 0 → R = 0 anyway.
 
 ### 📜 v1 → v3 evolution (recorded for the report)
 
 | Version | R formula | Key change |
 |---------|-----------|------------|
-| **v1** (HTML preview) | A − D − W (additive, binary lumps `+4` / `+3`) | The original hand-tuned reward |
+| **v1** (initial) | A − D − W (additive, binary lumps `+4` for pillow / `+3` for window) | Original hand-tuned reward; binary cliffs created the DONE-trap |
 | **v2** | A − D − W (unified `cells × factor × CELL_REWARD`) | Removed binary discontinuities; everything per-cell |
-| **v3** (current) | A × comfort × waste_eff (multiplicative, ratio) | Eliminates DONE-trap mathematically; scale-invariant |
+| **v3** (current — env.py + HTML) | A × privacy × light × efficiency, each factor `1 − ratio` | Each penalty is an independent discount in [0, 1] with one physical meaning; zero weights, zero τ, no transcendentals; eliminates DONE-trap; scale-invariant across room sizes |
 
 Audit-driven derivation: `python reward_audit.py` runs random / greedy /
 edge-greedy policies + a continuity sweep on the current env, plotting the
@@ -258,6 +301,7 @@ Deliverables: 📈 training curve (x=steps, y=reward) + 🎬 random vs trained v
 | `train.py` | 🚂 MaskablePPO training + CSV/TB logging + best-model save | ✅ Done |
 | `render.py` | 🎬 Record agent playing to mp4 (random or trained) | ✅ Done |
 | `plot_training.py` | 📈 Generate report figures from `runs/<name>/` logs | ✅ Done |
+| `TEAMMATE.md` | 👥 Quick-start for collaborators (run training, knobs, what to monitor) | ✅ Done |
 | `report.pptx` | 📊 Slides (≤20 pages) | ⬜ TODO |
 
 ---
@@ -289,10 +333,11 @@ class MyLittleBedroom(gym.Env):
         # Return obs, reward, done, truncated, info
     
     def calc_reward(self):
-        # Availability: check each placed piece
-        # Discomfort: vision cone + window check
-        # Waste: flood fill
-        # Return A - D - W
+        # Availability: Σ (√area × cat_factor) × pair/mult adjustments
+        # privacy    = 1 − pillow_ratio
+        # light      = 1 − window_ratio
+        # efficiency = 1 − waste_ratio
+        # Return A × privacy × light × efficiency
     
     def action_masks(self):
         # For each (fid, x, y, ori): check bounds + no overlap + not in swing
@@ -316,7 +361,6 @@ class MyLittleBedroom(gym.Env):
 
 ## ❓ Open Questions
 
-- 🛏️ Will the agent skip bed in tiny rooms where pillow can't be hidden? `comfort = exp(−pillow_ratio × 2 / 1)` could drop to 0.13 in worst case — watch training
-- ⏹️ Early stopping after 1-2 items? v3 eliminates the DONE-trap (R = 0 only when A = 0), but agent could still settle for partial play if marginal value of placement < marginal comfort cost. Audit shows greedy = +0.35, optimal likely +5 to +10
-- ⚖️ TAU values (D_TAU=1.0, W_TAU=0.5) are first-pass — if training plateaus, try D_TAU=2.0 (more forgiving) or 0.5 (more demanding)
+- 🛏️ Will the agent skip bed in tiny rooms where pillow can't be hidden? Worst case `pillow_ratio = 1` → privacy = 0 → R = 0. Watch training for "skip-bed" behaviour
+- ⏹️ Early stopping after 1-2 items? v3 eliminates the DONE-trap (R = 0 only when A = 0 or some `(1 − ratio) = 0`), but agent could still settle for partial play if the marginal availability of the next item < the marginal discount it incurs. Audit shows greedy = +0.35, optimal likely +5 to +10
 - 🏗️ Bed accessibility: currently "partial OK" (≥1 cell of long side in swept); may want ≥50% for stricter realism

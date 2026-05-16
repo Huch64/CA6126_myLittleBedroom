@@ -8,7 +8,8 @@ Reads from runs/<run_name>/:
 
 Writes to plots/<run_name>/:
     training_curve.png      ep_rew_mean (train) + mean (eval) vs env steps
-    reward_breakdown.png    A / D / W as three rolling-mean lines
+    reward_breakdown.png    availability + privacy_loss / light_loss /
+                            waste_loss as rolling-mean lines
     ep_length.png           episode length over training
     ppo_internals.png       value_loss / policy_loss / entropy / explained_var
     placement_stats.png     items placed and unique categories over training
@@ -75,10 +76,12 @@ def plot_reward_breakdown(eps: pd.DataFrame, out_path: Path,
     fig, ax = plt.subplots(figsize=(8, 4.5))
     ax.plot(eps["step"], _rolling(eps["availability"], window),
             label="Availability", color="#117733", lw=1.6)
-    ax.plot(eps["step"], _rolling(eps["discomfort"], window),
-            label="Discomfort", color="#cc6677", lw=1.6)
-    ax.plot(eps["step"], _rolling(eps["waste"], window),
-            label="Waste", color="#ddaa33", lw=1.6)
+    ax.plot(eps["step"], _rolling(eps["privacy_loss"], window),
+            label="Privacy loss", color="#cc6677", lw=1.6)
+    ax.plot(eps["step"], _rolling(eps["light_loss"], window),
+            label="Light loss", color="#ddaa33", lw=1.6)
+    ax.plot(eps["step"], _rolling(eps["waste_loss"], window),
+            label="Waste loss", color="#9530D4", lw=1.6)
     ax.plot(eps["step"], _rolling(eps["total"], window),
             label="Total", color="#222", lw=2.2)
     ax.set_xlabel("environment steps")

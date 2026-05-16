@@ -110,14 +110,17 @@ def _git_commit_hash() -> str | None:
 class EpisodeBreakdownLogger(BaseCallback):
     """Writes one CSV row per completed episode + aggregates to TensorBoard.
 
-    Per-row columns capture everything a report figure could want: the three
-    reward components, what got placed, the room/door/window config, and the
-    discomfort sub-flags. Plot scripts can slice on any of these.
+    Per-row columns capture everything a report figure could want: the
+    multiplicative reward factors, the "points lost" per factor, what got
+    placed, and the room/door/window config. Plot scripts can slice on any
+    of these.
     """
 
     HEADER = [
         "step", "ep_idx",
-        "total", "availability", "discomfort", "waste",
+        "total", "availability",
+        "privacy", "light", "efficiency",
+        "privacy_loss", "light_loss", "waste_loss",
         "n_placed", "n_unique_cats",
         "room_w", "room_h", "door_pos", "win_wall",
         "exposed_cells", "total_bed_cells",
@@ -148,7 +151,9 @@ class EpisodeBreakdownLogger(BaseCallback):
             self._ep_count += 1
             self._writer.writerow([
                 self.num_timesteps, self._ep_count,
-                bd["total"], bd["availability"], bd["discomfort"], bd["waste"],
+                bd["total"], bd["availability"],
+                bd["privacy"], bd["light"], bd["efficiency"],
+                bd["privacy_loss"], bd["light_loss"], bd["waste_loss"],
                 len(cats), len(set(cats)),
                 cfg["room_w"], cfg["room_h"], cfg["door_pos"], cfg["win_wall"],
                 bd["exposed_cells"], bd["total_bed_cells"],
@@ -158,8 +163,9 @@ class EpisodeBreakdownLogger(BaseCallback):
             ])
             # TensorBoard aggregates (these show up under custom/ in TB)
             self.logger.record_mean("custom/availability", bd["availability"])
-            self.logger.record_mean("custom/discomfort", bd["discomfort"])
-            self.logger.record_mean("custom/waste", bd["waste"])
+            self.logger.record_mean("custom/privacy",      bd["privacy"])
+            self.logger.record_mean("custom/light",        bd["light"])
+            self.logger.record_mean("custom/efficiency",   bd["efficiency"])
             self.logger.record_mean("custom/n_placed", len(cats))
             self.logger.record_mean("custom/n_unique_cats", len(set(cats)))
             self.logger.record_mean("custom/unreachable", bd["unreachable_cells"])

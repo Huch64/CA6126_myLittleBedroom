@@ -8,7 +8,9 @@ sanity-checked side-by-side with the interactive preview.
 MDP recap (see my_little_bedroom_spec.md):
   - State:  multi-channel 26x22 grid (occupancy / door / window).
   - Action: Discrete(41185) = (fid, x, y, ori) flattened + DONE.
-  - Reward: 0 every step except final, where R = Availability - Discomfort - Waste.
+  - Reward: 0 every step except final, where
+        R = Availability × privacy × light × efficiency
+    with each factor a (1 − ratio) discount in [0, 1].
 
 Public API:
   env = MyLittleBedroom(seed=0)
@@ -40,25 +42,23 @@ N_ORI = 4
 
 # ── reward v3 (multiplicative, ratio-based, scale-invariant) ──────
 #
-# R = Availability × comfort × waste_efficiency
+# R = Availability × privacy × light × efficiency
 #
-#   • Availability  = Σ (√area × cat_factor)  — kept sub-linear so big
-#                     furniture has diminishing returns.
-#   • comfort       = exp(−D_total / D_TAU)   — D_total combines three
-#                     dimensionless ratios (each ∈ [0, 1]):
-#                         bed_exp_ratio  = exposed body cells / total bed cells
-#                         pillow_ratio   = exposed pillow cells / total pillow
-#                         window_ratio   = blocked window cells / window strip
-#   • waste_eff     = exp(−W / W_TAU)         — W = unreachable / empty cells.
+#   • Availability  = Σ (√area × cat_factor)  — sub-linear: big furniture
+#                     has diminishing returns.
+#   • privacy       = 1 − pillow_ratio   (door can't peek at pillow)
+#                         pillow_ratio = exposed pillow cells / total pillow
+#   • light         = 1 − window_ratio   (window not blocked)
+#                         window_ratio = blocked window cells / window strip
+#   • efficiency    = 1 − waste_ratio    (room is walkable)
+#                         waste_ratio  = unreachable / empty cells
 #
-# Why ratios? Every penalty is a fraction of "the relevant resource", so the
-# reward is scale-invariant across room sizes and furniture dimensions. No
-# room-specific tuning needed.
-#
-# Why multiplicative? Penalties bound to (0, 1] act as efficiency discounts on
-# the placed value, never below zero. R = 0 only when A = 0 (i.e. DONE-
-# immediate); any placement gives R > 0, mathematically eliminating the
-# DONE-trap local optimum.
+# Each penalty is a fraction in [0, 1] of "the relevant resource", so each
+# (1 − ratio) is an independent discount factor in [0, 1]. No weights, no τ,
+# no clamping — every term has one transparent physical meaning. Properties:
+#   • Scale-invariant across room sizes (ratios cancel cell count).
+#   • R = 0 iff A = 0 (DONE-immediate) or some ratio = 1; any sensible
+#     placement makes R > 0 — eliminates the DONE-trap local optimum.
 
 AVAIL_FACTOR = {                    # availability = √(area_cells) × factor
     "bed":        0.32,             # bed 1.8: √168 × 0.32 ≈ 4.15
@@ -68,15 +68,6 @@ AVAIL_FACTOR = {                    # availability = √(area_cells) × factor
     "nightstand": 0.29,             # nightstand A: √12 × 0.29 ≈ 1.00
 }
 NIGHTSTAND_PAIR_BONUS = 1.0         # absolute bonus when paired with headboard
-
-# Discomfort ratio weights (relative importance; each ratio ∈ [0, 1])
-BED_EXP_W = 1.0                     # fraction of non-pillow bed cells exposed
-PILLOW_W  = 2.0                     # privacy weighted higher than body exposure
-WINDOW_W  = 1.0                     # fraction of window strip blocked
-
-# Decay time-constants (dimensionless; D_total/W reaching TAU → factor = 1/e)
-D_TAU = 1.0                         # D_total = 1.0 (≈ full discomfort) ⇒ ×0.37
-W_TAU = 0.5                         # waste_ratio = 0.5 (half room unreachable) ⇒ ×0.37
 
 # Back-compat shims (kept so old code that imports these doesn't break).
 # They have no effect under v3 — the actual reward uses the ratios above.
@@ -110,10 +101,10 @@ CATALOG: list[FurnSpec] = [
     FurnSpec("Wardrobe L",   "wardrobe",   10,  4, 2.0, 4),
     FurnSpec("Wardrobe XL",  "wardrobe",   12,  4, 2.5, 4),
     FurnSpec("Wardrobe XXL", "wardrobe",   14,  4, 2.5, 4),
-    FurnSpec("Cabinet S",    "cabinet",     4,  3, 1.0, 4),
-    FurnSpec("Cabinet M",    "cabinet",     6,  3, 1.5, 4),
-    FurnSpec("Cabinet L",    "cabinet",     8,  3, 1.5, 4),
-    FurnSpec("Cabinet XL",   "cabinet",    10,  3, 2.0, 4),
+    FurnSpec("Cabinet S",    "cabinet",     4,  3, 1.0, 3),
+    FurnSpec("Cabinet M",    "cabinet",     6,  3, 1.5, 3),
+    FurnSpec("Cabinet L",    "cabinet",     8,  3, 1.5, 3),
+    FurnSpec("Cabinet XL",   "cabinet",    10,  3, 2.0, 3),
     FurnSpec("Nightstand A", "nightstand",  4,  3, 1.0, 3),
     FurnSpec("Nightstand B", "nightstand",  3,  3, 1.0, 3),
 ]
@@ -382,14 +373,15 @@ class MyLittleBedroom(gym.Env):
     def _reward(self) -> float:
         """Compute final reward (v3: multiplicative, ratio-based).
 
-        R = availability  ×  comfort  ×  waste_eff
-          = availability  ×  exp(−D_total / D_TAU)  ×  exp(−waste_ratio / W_TAU)
+        R = availability × privacy × light × efficiency
+          privacy    = 1 − pillow_ratio
+          light      = 1 − window_ratio
+          efficiency = 1 − waste_ratio
 
         where every penalty is the fraction of its relevant resource:
             pillow_ratio  = exposed_pillow_cells / total_pillow_cells
             window_ratio  = blocked_window_cells / window_strip_cells
-            waste_ratio   = unreachable_cells / total_empty_cells
-            D_total       = PILLOW_W*pillow_ratio + WINDOW_W*window_ratio
+            waste_ratio   = unreachable_cells   / total_empty_cells
 
         Bed-body exposure (excluding pillow) is intentionally NOT penalised —
         in real design privacy concerns the head end (where the pillow is),
@@ -397,9 +389,9 @@ class MyLittleBedroom(gym.Env):
 
         Properties:
             • All ratios ∈ [0, 1] → scale-invariant across room sizes
-            • R = 0 iff availability = 0 (DONE-immediate) — no other trap
-            • Any furniture placement makes R > 0
-            • D = 0, W = 0 → no discount, R = availability (full credit)
+            • R = 0 iff availability = 0 (DONE-immediate) OR any ratio = 1
+            • All ratios = 0 → R = availability (full credit, no discount)
+            • No weights, no τ — each (1 − ratio) is an independent discount
         """
         rw, rh, pl = self.room_w, self.room_h, self.placed
         swept = _flood(self.grid, self.door_pos, rw, rh) if pl else set()
@@ -470,31 +462,40 @@ class MyLittleBedroom(gym.Env):
             unreachable = max(0, total_empty - len(swept))
             waste_ratio = unreachable / max(total_empty, 1)
 
-        # ── multiplicative combination ──
-        D_total = PILLOW_W * pillow_ratio + WINDOW_W * window_ratio
-        comfort   = math.exp(-D_total    / D_TAU)
-        waste_eff = math.exp(-waste_ratio / W_TAU)
-        total = round(availability * comfort * waste_eff * 10) / 10
+        # ── three independent multiplicative discounts ──
+        privacy    = 1.0 - pillow_ratio
+        light      = 1.0 - window_ratio
+        efficiency = 1.0 - waste_ratio
+        total = round(availability * privacy * light * efficiency * 10) / 10
 
-        # Express the multiplicative discounts as additive "points lost" so the
-        # downstream display (right panel) still reads naturally as A − D − W.
-        discount_d = round(availability * (1.0 - comfort) * 10) / 10
-        discount_w = round(availability * comfort * (1.0 - waste_eff) * 10) / 10
+        # Express each discount as "points lost" for the right-panel display.
+        # privacy_loss + light_loss + waste_loss + total = availability.
+        privacy_loss = round(availability * (1.0 - privacy)                       * 10) / 10
+        light_loss   = round(availability * privacy * (1.0 - light)               * 10) / 10
+        waste_loss   = round(availability * privacy * light * (1.0 - efficiency)  * 10) / 10
 
         self._last_breakdown = {
-            # Top-level (additive interpretation for compatibility with old plots)
+            # Top-level
             "availability":      round(availability * 10) / 10,
-            "discomfort":        discount_d,
-            "waste":             discount_w,
             "total":             total,
             "per_item":          per_item,
-            # v3 native fields
-            "comfort":           round(comfort * 1000) / 1000,
-            "waste_eff":         round(waste_eff * 1000) / 1000,
+            # v3 native factors (∈ [0, 1])
+            "privacy":           round(privacy    * 1000) / 1000,
+            "light":             round(light      * 1000) / 1000,
+            "efficiency":        round(efficiency * 1000) / 1000,
+            # "Points lost" decomposition (sums to A − R)
+            "privacy_loss":      privacy_loss,
+            "light_loss":        light_loss,
+            "waste_loss":        waste_loss,
+            # Back-compat aliases (so old runs / scripts that read these keep working)
+            "comfort":           round(privacy * light * 1000) / 1000,
+            "waste_eff":         round(efficiency * 1000) / 1000,
+            "discomfort":        round((privacy_loss + light_loss) * 10) / 10,
+            "waste":             waste_loss,
+            # Raw ratios
             "pillow_ratio":      round(pillow_ratio * 1000) / 1000,
             "window_ratio":      round(window_ratio * 1000) / 1000,
             "waste_ratio":       round(waste_ratio * 1000) / 1000,
-            "d_total":           round(D_total * 1000) / 1000,
             # Counts (used for in-panel "X / Y" display)
             "n_exposed_pillow":  exposed_pillow_n,
             "total_pillow_cells": total_pillow_n,

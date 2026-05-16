@@ -570,8 +570,8 @@ def _draw_placements(ax, env):
 
 
 def _draw_reward_details(ax, breakdown):
-    """Right middle: per-item / discomfort / waste breakdown. Auto-fills
-    the band between PLACEMENTS and the fixed TOTALS box."""
+    """Right middle: per-item availability + privacy / light / efficiency
+    factor blocks. Auto-fills the band between PLACEMENTS and TOTALS."""
     ax.plot([0.0, 1.0], [0.97, 0.97], color="#ddd", lw=0.8,
             transform=ax.transAxes)
     ax.text(0.0, 0.93, "REWARD", fontsize=SZ_HEADER, weight="bold",
@@ -582,75 +582,61 @@ def _draw_reward_details(ax, breakdown):
                 color="#bbb", family=MONO, va="top", style="italic")
         return
 
-    y = 0.78
+    y = 0.80
     ax.text(0.02, y, "Per-item availability", fontsize=SZ_DETAIL, color="#888",
             va="top", family=MONO)
-    y -= 0.055
+    y -= 0.050
     for name, val in breakdown["per_item"]:
         ax.text(0.04, y, f"{name:<14}", fontsize=SZ_DETAIL, color="#444",
                 va="top", family=MONO)
         c = "#2a9" if val > 0 else "#bbb"
         ax.text(1.0, y, f"+{val}", fontsize=SZ_DETAIL, color=c,
                 va="top", ha="right", family=MONO)
-        y -= 0.045
-
-    # Comfort factor (multiplicative)
-    y -= 0.025
-    ax.text(0.02, y, "Comfort  (× availability)", fontsize=SZ_DETAIL,
-            color="#888", va="top", family=MONO)
-    y -= 0.055
-    n_pil = breakdown.get("n_exposed_pillow", 0)
-    tot_pil = breakdown.get("total_pillow_cells", 0)
-    pil_r = breakdown.get("pillow_ratio", 0.0)
-    n_win = breakdown.get("n_window_blocked", 0)
-    win_strip = breakdown.get("window_strip_cells", 0)
-    win_r = breakdown.get("window_ratio", 0.0)
-    comfort = breakdown.get("comfort", 1.0)
-    for k, v, r in [
-        ("pillow visible", f"{n_pil}/{tot_pil}", f"{pil_r:.2f}"),
-        ("window blocked", f"{n_win}/{win_strip}", f"{win_r:.2f}"),
-    ]:
-        ax.text(0.04, y, f"{k:<14}", fontsize=SZ_DETAIL, color="#444",
-                va="top", family=MONO)
-        ax.text(0.55, y, v, fontsize=SZ_DETAIL, color="#666",
-                va="top", family=MONO)
-        ax.text(1.0, y, f"ratio {r}", fontsize=SZ_DETAIL, color="#666",
-                va="top", ha="right", family=MONO)
         y -= 0.040
-    ax.text(0.04, y, "comfort factor", fontsize=SZ_DETAIL,
-            color="#444", va="top", family=MONO, weight="bold")
-    ax.text(1.0, y, f"× {comfort:.2f}", fontsize=SZ_DETAIL,
-            color="#c44" if comfort < 1.0 else "#2a9",
-            va="top", ha="right", family=MONO, weight="bold")
-    y -= 0.045
 
-    # Waste-efficiency factor
-    y -= 0.020
-    ax.text(0.02, y, "Waste-eff  (× comfort × A)", fontsize=SZ_DETAIL,
-            color="#888", va="top", family=MONO)
-    y -= 0.055
-    unr = breakdown["unreachable_cells"]
-    tot_e = breakdown.get("total_empty_cells", 0)
-    w_r = breakdown.get("waste_ratio", 0.0)
-    w_eff = breakdown.get("waste_eff", 1.0)
-    ax.text(0.04, y, f"{'unreachable':<14}",
-            fontsize=SZ_DETAIL, color="#444", va="top", family=MONO)
-    ax.text(0.55, y, f"{unr}/{tot_e}", fontsize=SZ_DETAIL, color="#666",
-            va="top", family=MONO)
-    ax.text(1.0, y, f"ratio {w_r:.2f}", fontsize=SZ_DETAIL, color="#666",
-            va="top", ha="right", family=MONO)
-    y -= 0.040
-    ax.text(0.04, y, "waste-efficiency", fontsize=SZ_DETAIL,
-            color="#444", va="top", family=MONO, weight="bold")
-    ax.text(1.0, y, f"× {w_eff:.2f}", fontsize=SZ_DETAIL,
-            color="#c44" if w_eff < 1.0 else "#2a9",
-            va="top", ha="right", family=MONO, weight="bold")
+    privacy = breakdown.get("privacy", 1.0)
+    light   = breakdown.get("light",   1.0)
+    eff     = breakdown.get("efficiency", 1.0)
+    n_pil   = breakdown.get("n_exposed_pillow", 0)
+    tot_pil = breakdown.get("total_pillow_cells", 0)
+    pil_r   = breakdown.get("pillow_ratio", 0.0)
+    n_win   = breakdown.get("n_window_blocked", 0)
+    win_strip = breakdown.get("window_strip_cells", 0)
+    win_r   = breakdown.get("window_ratio", 0.0)
+    unr     = breakdown["unreachable_cells"]
+    tot_e   = breakdown.get("total_empty_cells", 0)
+    w_r     = breakdown.get("waste_ratio", 0.0)
+
+    # Three independent discount factors — each a (1 − ratio) discount on A.
+    factors = [
+        ("Privacy",    "pillow visible", f"{n_pil}/{tot_pil}",   pil_r, privacy),
+        ("Light",      "window blocked", f"{n_win}/{win_strip}", win_r, light),
+        ("Efficiency", "unreachable",    f"{unr}/{tot_e}",       w_r,   eff),
+    ]
+    for title, label, ratio_str, ratio_v, factor in factors:
+        y -= 0.020
+        ax.text(0.02, y, f"{title}  (× discount)", fontsize=SZ_DETAIL,
+                color="#888", va="top", family=MONO)
+        y -= 0.050
+        ax.text(0.04, y, f"{label:<14}", fontsize=SZ_DETAIL, color="#444",
+                va="top", family=MONO)
+        ax.text(0.55, y, ratio_str, fontsize=SZ_DETAIL, color="#666",
+                va="top", family=MONO)
+        ax.text(1.0, y, f"ratio {ratio_v:.2f}", fontsize=SZ_DETAIL, color="#666",
+                va="top", ha="right", family=MONO)
+        y -= 0.038
+        ax.text(0.04, y, title.lower(), fontsize=SZ_DETAIL,
+                color="#444", va="top", family=MONO, weight="bold")
+        ax.text(1.0, y, f"× {factor:.2f}", fontsize=SZ_DETAIL,
+                color="#c44" if factor < 1.0 else "#2a9",
+                va="top", ha="right", family=MONO, weight="bold")
+        y -= 0.040
 
 
 def _draw_totals(ax, breakdown):
     """Right bottom: multiplicative reward breakdown + big TOTAL.
 
-    R = availability × comfort × waste_eff
+    R = availability × privacy × light × efficiency
         (everything at FIXED y positions for visual stability across frames)
     """
     if breakdown is None:
@@ -661,15 +647,17 @@ def _draw_totals(ax, breakdown):
             transform=ax.transAxes)
 
     A = breakdown["availability"]
-    comfort = breakdown.get("comfort", 1.0)
-    w_eff = breakdown.get("waste_eff", 1.0)
+    privacy = breakdown.get("privacy", 1.0)
+    light   = breakdown.get("light",   1.0)
+    eff     = breakdown.get("efficiency", 1.0)
 
     rows = [
-        ("Availability",      f"+{A}",            "#222"),
-        ("× comfort",         f"× {comfort:.2f}", "#c44" if comfort < 1.0 else "#666"),
-        ("× waste-eff",       f"× {w_eff:.2f}",   "#c44" if w_eff < 1.0 else "#666"),
+        ("Availability", f"+{A}",            "#222"),
+        ("× privacy",    f"× {privacy:.2f}", "#c44" if privacy < 1.0 else "#666"),
+        ("× light",      f"× {light:.2f}",   "#c44" if light   < 1.0 else "#666"),
+        ("× efficiency", f"× {eff:.2f}",     "#c44" if eff     < 1.0 else "#666"),
     ]
-    y_positions = [0.82, 0.68, 0.54]
+    y_positions = [0.84, 0.72, 0.60, 0.48]
     for (k, v, c), y in zip(rows, y_positions):
         ax.text(0.02, y, k, fontsize=SZ_BODY, color="#333",
                 va="center", weight="bold", family=MONO)
@@ -677,10 +665,10 @@ def _draw_totals(ax, breakdown):
                 va="center", ha="right", weight="bold", family=MONO)
 
     # Divider between factors and TOTAL
-    ax.plot([0.0, 1.0], [0.40, 0.40], color="#bbb", lw=1.0,
+    ax.plot([0.0, 1.0], [0.36, 0.36], color="#bbb", lw=1.0,
             transform=ax.transAxes)
 
-    BASELINE = 0.16
+    BASELINE = 0.14
     ax.text(0.02, BASELINE, "TOTAL", fontsize=SZ_BODY + 2, color="#333",
             va="baseline", weight="bold", family=MONO)
     ax.text(1.0, BASELINE, f"{breakdown['total']:+}", fontsize=SZ_TOTAL,
@@ -734,8 +722,13 @@ def main():
         rewards.append(r)
         all_frames.extend(frames)
         info = env._info()
-        bd_str = (f"A={bd['availability']} D={bd['discomfort']} W={bd['waste']}"
-                  if bd else "(no breakdown)")
+        bd_str = (
+            f"A={bd['availability']} "
+            f"×privacy={bd.get('privacy', 1.0):.2f} "
+            f"×light={bd.get('light', 1.0):.2f} "
+            f"×eff={bd.get('efficiency', 1.0):.2f}"
+            if bd else "(no breakdown)"
+        )
         print(f"[{label}] ep {ep + 1}/{args.episodes}: "
               f"reward={r}  {bd_str}  room={info['room']}")
 
