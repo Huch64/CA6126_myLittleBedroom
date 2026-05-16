@@ -1,0 +1,184 @@
+<!DOCTYPE html><html><head><meta charset="UTF-8"><title>My Little Bedroom</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#fff;font-family:'Helvetica Neue',sans-serif;color:#333}
+input[type=range]{-webkit-appearance:none;appearance:none;height:4px;background:#ddd;border-radius:2px;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#555;border:none;cursor:pointer}
+input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#555;border:none;cursor:pointer}
+.card{border:1px solid #eee;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fafafa}
+.card-title{font-size:12px;font-weight:700;color:#444;margin-bottom:2px}
+.card-hint{font-size:9px;color:#bbb;margin-bottom:6px}
+.cat-label{font-size:10px;color:#777;margin-bottom:4px}
+.btn{border:none;cursor:pointer;background:transparent;font-family:inherit}
+.btn-wall{padding:2px 6px;border-radius:3px;font-size:10px;font-weight:400;color:#bbb}
+.btn-wall.active{background:#FFE50030;color:#333;font-weight:700}
+</style>
+</head><body><div id="root"></div>
+<script type="text/babel" data-presets="react">
+var useState=React.useState,useMemo=React.useMemo,useCallback=React.useCallback;
+var GRID=0.15,GW=26,GH=22,CELL=18,DW=6,WW=12,WT=CELL,WCOEFF=0.2;
+var GRAY="#999",LEM="#FFE500",WALLC="#C8C4BE";
+var CC={bed:"#45D468",desk:"#30D4A0",wardrobe:"#30A8D4",cabinet:"#5050D4",nightstand:"#9530D4"};
+var MAXC={bed:1,desk:1,wardrobe:1,cabinet:1,nightstand:2};
+var CATDESC={bed:"pick 1 from 4 sizes",desk:"pick 1 \u00b7 includes chair",wardrobe:"pick 1 from 5 sizes",cabinet:"pick 1 from 4 sizes",nightstand:"up to 2"};
+var CAT=[
+  {n:"Bed 0.9",c:"bed",w:14,h:6,v:3,pl:1,zd:3,z3:1},{n:"Bed 1.2",c:"bed",w:14,h:8,v:3.5,pl:1,zd:3,z3:1},{n:"Bed 1.5",c:"bed",w:14,h:10,v:4,pl:2,zd:3,z3:1},{n:"Bed 1.8",c:"bed",w:14,h:12,v:4,pl:2,zd:3,z3:1},
+  {n:"Desk S",c:"desk",w:6,h:4,v:2.5,zd:5},{n:"Desk L",c:"desk",w:8,h:4,v:3,zd:5},{n:"Desk XL",c:"desk",w:12,h:4,v:3,zd:5},
+  {n:"Wardrobe S",c:"wardrobe",w:6,h:4,v:1.5,zd:4},{n:"Wardrobe M",c:"wardrobe",w:8,h:4,v:2,zd:4},{n:"Wardrobe L",c:"wardrobe",w:10,h:4,v:2,zd:4},{n:"Wardrobe XL",c:"wardrobe",w:12,h:4,v:2.5,zd:4},{n:"Wardrobe XXL",c:"wardrobe",w:14,h:4,v:2.5,zd:4},
+  {n:"Cabinet S",c:"cabinet",w:4,h:3,v:1,zd:4},{n:"Cabinet M",c:"cabinet",w:6,h:3,v:1.5,zd:4},{n:"Cabinet L",c:"cabinet",w:8,h:3,v:1.5,zd:4},{n:"Cabinet XL",c:"cabinet",w:10,h:3,v:2,zd:4},
+  {n:"Nightstand A",c:"nightstand",w:4,h:3,v:1,zd:3},{n:"Nightstand B",c:"nightstand",w:3,h:3,v:1,zd:3}];
+var CATS=["bed","desk","wardrobe","cabinet","nightstand"];
+function gfp(s,o){return(o===1||o===3)?{w:s.h,h:s.w}:{w:s.w,h:s.h};}
+function inR(x,y,rw,rh){return x>=0&&x<rw&&y>=0&&y<rh;}
+function mkSwing(dw,dp,rw,rh){var s=new Set(),r=DW,hinge=dp<((dw==="top"||dw==="bottom")?rw:rh)/2;
+  if(dw==="top"||dw==="bottom"){var hx=hinge?dp:dp+DW,dir=dw==="top"?1:-1,sign=hinge?1:-1;
+    for(var i=0;i<=r;i++)for(var j=0;j<=r;j++){var cx=hx+j*sign,cy=(dw==="top"?0:rh-1)+dir*i;if(inR(cx,cy,rw,rh)&&(j+.5)*(j+.5)+(i+.5)*(i+.5)<=r*r)s.add(cx+","+cy);}}
+  else{var hy=hinge?dp:dp+DW,dir2=dw==="left"?1:-1,sign2=hinge?1:-1;
+    for(var i2=0;i2<=r;i2++)for(var j2=0;j2<=r;j2++){var cy2=hy+j2*sign2,cx2=(dw==="left"?0:rw-1)+dir2*i2;if(inR(cx2,cy2,rw,rh)&&(i2+.5)*(i2+.5)+(j2+.5)*(j2+.5)<=r*r)s.add(cx2+","+cy2);}}return s;}
+function mkArc(dw,dp,rw,rh){var r=DW*CELL,hinge=dp<((dw==="top"||dw==="bottom")?rw:rh)/2,hx,hy,lx,ly,arc;
+  if(dw==="top"||dw==="bottom"){var hpx=hinge?dp:dp+DW;hx=hpx*CELL;hy=dw==="top"?0:rh*CELL;var d=dw==="top"?1:-1;
+    var ex=hinge?hx+r:hx-r;var sw=hinge?(dw==="top"?1:0):(dw==="top"?0:1);
+    arc="M"+ex+" "+hy+"A"+r+" "+r+" 0 0 "+sw+" "+hx+" "+(hy+d*r);lx=hx;ly=hy+d*r;}
+  else{var hpy=hinge?dp:dp+DW;hy=hpy*CELL;hx=dw==="left"?0:rw*CELL;var d2=dw==="left"?1:-1;
+    var ey=hinge?hy+r:hy-r;var sw2=hinge?(dw==="left"?0:1):(dw==="left"?1:0);
+    arc="M"+hx+" "+ey+"A"+r+" "+r+" 0 0 "+sw2+" "+(hx+d2*r)+" "+hy;lx=hx+d2*r;ly=hy;}
+  return{hx:hx,hy:hy,lx:lx,ly:ly,arc:arc};}
+function zoneRects(p){var s=CAT[p.fid],d=s.zd,rs=[],o=p.ori;
+  if(s.z3){if(o===0||o===2){rs.push({x:p.x,y:p.y-d,w:p.fw,h:d});rs.push({x:p.x,y:p.y+p.fh,w:p.fw,h:d});rs.push(o===0?{x:p.x+p.fw,y:p.y,w:d,h:p.fh}:{x:p.x-d,y:p.y,w:d,h:p.fh});}
+  else{rs.push({x:p.x-d,y:p.y,w:d,h:p.fh});rs.push({x:p.x+p.fw,y:p.y,w:d,h:p.fh});rs.push(o===1?{x:p.x,y:p.y+p.fh,w:p.fw,h:d}:{x:p.x,y:p.y-d,w:p.fw,h:d});}}
+  else{if(o===0)rs.push({x:p.x,y:p.y+p.fh,w:p.fw,h:d});else if(o===1)rs.push({x:p.x+p.fw,y:p.y,w:d,h:p.fh});else if(o===2)rs.push({x:p.x,y:p.y-d,w:p.fw,h:d});else rs.push({x:p.x-d,y:p.y,w:d,h:p.fh});}return rs;}
+function zoneCells(p){var rs=zoneRects(p),c=[];for(var i=0;i<rs.length;i++){var r=rs[i];for(var dy=0;dy<r.h;dy++)for(var dx=0;dx<r.w;dx++)c.push([r.x+dx,r.y+dy]);}return c;}
+function pillowCells(p){var c=[],o=p.ori;if(o===0)for(var i=0;i<p.fh;i++)c.push([p.x,p.y+i]);else if(o===1)for(var i2=0;i2<p.fw;i2++)c.push([p.x+i2,p.y]);else if(o===2)for(var i3=0;i3<p.fh;i3++)c.push([p.x+p.fw-1,p.y+i3]);else for(var i4=0;i4<p.fw;i4++)c.push([p.x+i4,p.y+p.fh-1]);return c;}
+function Detail(props){var px=props.px,py=props.py,pw=props.pw,ph=props.ph,cat=props.cat,item=props.item,ori=props.ori,cx=px+pw/2,cy=py+ph/2,W="rgba(255,255,255,0.45)",WB="rgba(255,255,255,0.6)";
+  if(cat==="bed"){var n=item.pl||1,t=Math.max(8,Math.min(pw,ph)*0.18),els=[];
+    if(ori===0||ori===2){var pX=ori===0?px+4:px+pw-4-t,pL=n===1?ph*0.45:ph*0.3;els.push(<line key="l" x1={ori===0?px+pw*0.42:px+pw*0.58} y1={py+4} x2={ori===0?px+pw*0.42:px+pw*0.58} y2={py+ph-4} stroke={W} strokeWidth={1}/>);if(n===1)els.push(<rect key="p1" x={pX} y={cy-pL/2} width={t} height={pL} rx={2.5} fill={WB}/>);else{els.push(<rect key="p1" x={pX} y={cy-pL-3} width={t} height={pL} rx={2.5} fill={WB}/>);els.push(<rect key="p2" x={pX} y={cy+3} width={t} height={pL} rx={2.5} fill={WB}/>);}}
+    else{var pY=ori===1?py+4:py+ph-4-t,pL2=n===1?pw*0.45:pw*0.3;els.push(<line key="l" x1={px+4} y1={ori===1?py+ph*0.42:py+ph*0.58} x2={px+pw-4} y2={ori===1?py+ph*0.42:py+ph*0.58} stroke={W} strokeWidth={1}/>);if(n===1)els.push(<rect key="p1" x={cx-pL2/2} y={pY} width={pL2} height={t} rx={2.5} fill={WB}/>);else{els.push(<rect key="p1" x={cx-pL2-3} y={pY} width={pL2} height={t} rx={2.5} fill={WB}/>);els.push(<rect key="p2" x={cx+3} y={pY} width={pL2} height={t} rx={2.5} fill={WB}/>);}}return <g>{els}</g>;}
+  if(cat==="desk"){var mW=Math.min(pw*0.75,4*CELL),mH=4;if(ori===0||ori===2){var mY=ori===0?py+4:py+ph-4-mH;return <rect x={cx-mW/2} y={mY} width={mW} height={mH} rx={1.5} fill={WB}/>;}else{var mX=ori===1?px+4:px+pw-4-mH;return <rect x={mX} y={cy-mW/2} width={mH} height={mW} rx={1.5} fill={WB}/>;}}
+  if(cat==="wardrobe"){if(pw>=ph)return <line x1={px+4} y1={py+ph*0.4} x2={px+pw-4} y2={py+ph*0.4} stroke={W} strokeWidth={1.5}/>;return <line x1={px+pw*0.4} y1={py+4} x2={px+pw*0.4} y2={py+ph-4} stroke={W} strokeWidth={1.5}/>;}
+  if(cat==="cabinet"){var nn=Math.max(1,Math.floor(Math.max(pw,ph)/20)),ls=[];for(var ci=0;ci<nn;ci++){var f=(ci+1)/(nn+1);if(pw>=ph)ls.push(<line key={ci} x1={px+pw*f} y1={py+3} x2={px+pw*f} y2={py+ph-3} stroke={W} strokeWidth={1.5}/>);else ls.push(<line key={ci} x1={px+3} y1={py+ph*f} x2={px+pw-3} y2={py+ph*f} stroke={W} strokeWidth={1.5}/>);}return <g>{ls}</g>;}
+  if(cat==="nightstand")return <circle cx={cx} cy={cy} r={Math.min(pw,ph)*0.15} fill="none" stroke={WB} strokeWidth={1}/>;return null;}
+function flood(grid,dw,dp,rw,rh){var pass=[];for(var y=0;y<rh;y++){pass[y]=[];for(var x=0;x<rw;x++){var ok=grid[y]&&grid[y][x]===0;if(ok){for(var dy=-1;dy<=1&&ok;dy++)for(var dx=-1;dx<=1&&ok;dx++){var nx=x+dx,ny=y+dy;if(!inR(nx,ny,rw,rh)||grid[ny][nx]!==0)ok=false;}}pass[y][x]=ok;}}
+  var cen=new Set(),q=[];for(var i=0;i<DW;i++){var sx,sy;if(dw==="top"){sx=dp+i;sy=1;}else if(dw==="bottom"){sx=dp+i;sy=rh-2;}else if(dw==="left"){sx=1;sy=dp+i;}else{sx=rw-2;sy=dp+i;}if(inR(sx,sy,rw,rh)&&pass[sy]&&pass[sy][sx]){cen.add(sx+","+sy);q.push([sx,sy]);}}
+  var dirs=[[-1,0],[1,0],[0,-1],[0,1]];while(q.length){var cur=q.shift();for(var d=0;d<4;d++){var nx2=cur[0]+dirs[d][0],ny2=cur[1]+dirs[d][1],nk=nx2+","+ny2;if(inR(nx2,ny2,rw,rh)&&pass[ny2]&&pass[ny2][nx2]&&!cen.has(nk)){cen.add(nk);q.push([nx2,ny2]);}}}
+  var sw=new Set();cen.forEach(function(k){var p=k.split(",");var cx=+p[0],cy=+p[1];for(var ey=-1;ey<=1;ey++)for(var ex=-1;ex<=1;ex++){var x2=cx+ex,y2=cy+ey;if(inR(x2,y2,rw,rh)&&grid[y2]&&grid[y2][x2]===0)sw.add(x2+","+y2);}});return sw;}
+function fatAt(pl,x,y){for(var i=0;i<pl.length;i++){var p=pl[i];if(x>=p.x&&x<p.x+p.fw&&y>=p.y&&y<p.y+p.fh)return p;}return null;}
+function calc(pl,dw,dp,grid,ww,wp,rw,rh,wWidth){var sw=pl.length>0?flood(grid,dw,dp,rw,rh):new Set();var i,cc={};for(i=0;i<pl.length;i++){var c2=CAT[pl[i].fid].c;cc[c2]=(cc[c2]||0)+1;}
+  var beds=[],nss=[];for(i=0;i<pl.length;i++){var ct=CAT[pl[i].fid].c;if(ct==="bed")beds.push(pl[i]);if(ct==="nightstand")nss.push(pl[i]);}
+  var pNS=new Set();for(var ni=0;ni<nss.length;ni++){var ns=nss[ni];for(var bi=0;bi<beds.length;bi++){var bd=beds[bi],o=bd.ori,paired=false;if(o===0||o===2){var abv=ns.y+ns.fh===bd.y&&ns.x<bd.x+bd.fw&&ns.x+ns.fw>bd.x;var blw=ns.y===bd.y+bd.fh&&ns.x<bd.x+bd.fw&&ns.x+ns.fw>bd.x;var hbX=o===0?bd.x:bd.x+bd.fw-1;paired=(abv||blw)&&ns.x<=hbX&&ns.x+ns.fw>hbX;}else{var lft=ns.x+ns.fw===bd.x&&ns.y<bd.y+bd.fh&&ns.y+ns.fh>bd.y;var rgt=ns.x===bd.x+bd.fw&&ns.y<bd.y+bd.fh&&ns.y+ns.fh>bd.y;var hbY=o===1?bd.y:bd.y+bd.fh-1;paired=(lft||rgt)&&ns.y<=hbY&&ns.y+ns.fh>hbY;}if(paired){pNS.add(ns.id);break;}}}
+  var av=0,aP=[],aZ=[];for(i=0;i<pl.length;i++){var p=pl[i],sp=CAT[p.fid];if(cc[sp.c]>(MAXC[sp.c]||1)){aP.push(sp.n+":0");continue;}var con=false;for(var dy=-1;dy<=p.fh&&!con;dy++)for(var dx=-1;dx<=p.fw&&!con;dx++){if(dy>=0&&dy<p.fh&&dx>=0&&dx<p.fw)continue;if(sw.has((p.x+dx)+","+(p.y+dy)))con=true;}if(!con&&pl.length>0){aP.push(sp.n+":0");continue;}var m=1,b=0;if(sp.c==="nightstand"){if(pNS.has(p.id))b=1;else m=0.5;}var ok=true,zR=zoneRects(p),aCat=sp.c==="bed"?["nightstand"]:[],part=!!sp.z3,ag=false,ab=false;for(var ri=0;ri<zR.length;ri++){var zr=zR[ri];for(var zy=0;zy<zr.h;zy++)for(var zx=0;zx<zr.w;zx++){var cx=zr.x+zx,cy=zr.y+zy;if(!inR(cx,cy,rw,rh)){ab=true;continue;}if(grid[cy][cx]!==0){var oc=fatAt(pl,cx,cy);if(oc&&aCat.indexOf(CAT[oc.fid].c)>=0){ag=true;continue;}ab=true;}else ag=true;}}if(part)ok=ag;else ok=!ab;var val=ok?sp.v*m+b:0;av+=val;if(ok){var zc=zoneCells(p);for(var ai=0;ai<zc.length;ai++)aZ.push(zc[ai]);}aP.push(sp.n+":"+(Math.round(val*10)/10));}
+  var dcx=0,dcy=0,fac=0;if(dw==="top"){dcx=dp+DW/2;dcy=0.5;fac=Math.PI/2;}else if(dw==="bottom"){dcx=dp+DW/2;dcy=rh-0.5;fac=-Math.PI/2;}else if(dw==="left"){dcx=0.5;dcy=dp+DW/2;fac=0;}else{dcx=rw-0.5;dcy=dp+DW/2;fac=Math.PI;}
+  var exp=[],disc=0,tbc=0,psn=false,dd="";if(beds.length>0){var pSet=new Set();for(i=0;i<beds.length;i++){var pc=pillowCells(beds[i]);for(var pi=0;pi<pc.length;pi++)pSet.add(pc[pi][0]+","+pc[pi][1]);}for(i=0;i<beds.length;i++){var bb=beds[i];for(var by=0;by<bb.fh;by++)for(var bx=0;bx<bb.fw;bx++){tbc++;var bxc=bb.x+bx+0.5,byc=bb.y+by+0.5,ang=Math.atan2(byc-dcy,bxc-dcx),df=ang-fac;while(df>Math.PI)df-=2*Math.PI;while(df<-Math.PI)df+=2*Math.PI;if(Math.abs(df)<Math.PI/4){var blk=false,lx=Math.round(dcx),ly=Math.round(dcy),tx=bb.x+bx,ty=bb.y+by,adx=Math.abs(tx-lx),ady=Math.abs(ty-ly),sx=lx<tx?1:-1,sy=ly<ty?1:-1,err=adx-ady,cx2=lx,cy2=ly,st=0;while(st<100){st++;if(cx2===tx&&cy2===ty)break;var e2=2*err;if(e2>-ady){err-=ady;cx2+=sx;}if(e2<adx){err+=adx;cy2+=sy;}if(cx2===tx&&cy2===ty)break;if(inR(cx2,cy2,rw,rh)&&grid[cy2][cx2]!==0){var blkF=fatAt(pl,cx2,cy2);if(blkF&&CAT[blkF.fid].c==="wardrobe"){blk=true;break;}}}if(!blk){exp.push([bb.x+bx,bb.y+by]);if(pSet.has((bb.x+bx)+","+(bb.y+by)))psn=true;}}}}var be=tbc>0?Math.round(exp.length/tbc*50)/10:0;disc+=be+(psn?4:0);dd=exp.length+"/"+tbc+"\u00d75="+(Math.round(be*10)/10)+(psn?" +4":"");}
+  var wBlk=false,wBkr=null;for(var wi=0;wi<wWidth&&!wBlk;wi++){for(var wd=0;wd<2&&!wBlk;wd++){var wx,wy;if(ww==="top"){wx=wp+wi;wy=wd;}else if(ww==="bottom"){wx=wp+wi;wy=rh-1-wd;}else if(ww==="left"){wy=wp+wi;wx=wd;}else{wy=wp+wi;wx=rw-1-wd;}if(inR(wx,wy,rw,rh)&&grid[wy][wx]===1){var oc2=fatAt(pl,wx,wy);if(oc2){var pc2=CAT[oc2.fid].c;if(pc2==="bed"||pc2==="wardrobe"){wBlk=true;wBkr=oc2;}}}}}if(wBlk){disc+=3;dd+=" +3win";}
+  var wst=0,unr=0;if(pl.length>0){var te=0;for(var iy=0;iy<rh;iy++)for(var ix=0;ix<rw;ix++)if(grid[iy][ix]===0)te++;unr=te-sw.size;wst=Math.round(unr*WCOEFF*10)/10;}
+  var tot=Math.round((av-disc-wst)*10)/10;return{av:Math.round(av*10)/10,disc:Math.round(disc*10)/10,wst:wst,tot:tot,aP:aP.join("  "),dd:dd||"\u2014",wd:unr+"c",exp:exp,sw:sw,aZ:aZ,wBkr:wBkr,dcx:dcx,dcy:dcy,fac:fac};}
+function Thumb(p){var s=1.5;return <svg width={Math.max(p.w*s+2,8)} height={Math.max(p.h*s+2,8)} style={{marginRight:3,flexShrink:0}}><rect x={1} y={1} width={p.w*s} height={p.h*s} fill={p.color} rx={1} opacity={0.7}/></svg>;}
+
+function App(){
+  var _s=useState(null),sel=_s[0],setSel=_s[1],_o=useState(0),ori=_o[0],setOri=_o[1],_p=useState([]),pl=_p[0],setPl=_p[1],_h=useState(null),hov=_h[0],setHov=_h[1];
+  var _rw=useState(26),rW=_rw[0],setRW=_rw[1],_rh=useState(22),rH=_rh[0],setRH=_rh[1];
+  var _dp=useState(1),dPos=_dp[0],setDPos=_dp[1];
+  var _ww=useState("top"),wWall=_ww[0],setWWall=_ww[1];
+  var _hl=useState(null),hlM=_hl[0],setHlM=_hl[1];
+  var dWall="bottom";
+  var vww=["top","left","right"],eWW=vww.indexOf(wWall)>=0?wWall:"top",isWH=eWW==="top";
+  var maxDP=rW-DW,eDP=Math.min(dPos,maxDP);
+  var winLen=isWH?rW:rH,winW=Math.round(winLen*0.5/2)*2,eWP=Math.floor((winLen-winW)/2);
+  var svgW=GW*CELL,svgH=GH*CELL;
+  var rmW=rW*CELL,rmH=rH*CELL;
+  var swing=useMemo(function(){return mkSwing(dWall,eDP,rW,rH);},[dWall,eDP,rW,rH]);
+  var dArc=useMemo(function(){return mkArc(dWall,eDP,rW,rH);},[dWall,eDP,rW,rH]);
+  var grid=useMemo(function(){var g=[];for(var y=0;y<rH;y++){g[y]=[];for(var x=0;x<rW;x++)g[y][x]=0;}for(var i=0;i<pl.length;i++){var p=pl[i];for(var dy=0;dy<p.fh;dy++)for(var dx=0;dx<p.fw;dx++)if(inR(p.x+dx,p.y+dy,rW,rH))g[p.y+dy][p.x+dx]=1;}return g;},[pl,rW,rH]);
+  var chkV=useCallback(function(fid,x,y,o){var d=gfp(CAT[fid],o);if(x<0||y<0||x+d.w>rW||y+d.h>rH)return false;for(var dy=0;dy<d.h;dy++)for(var dx=0;dx<d.w;dx++){if(grid[y+dy][x+dx]>0)return false;if(swing.has((x+dx)+","+(y+dy)))return false;}return true;},[grid,swing,rW,rH]);
+  function doPlace(cx,cy){if(sel===null||!chkV(sel,cx,cy,ori))return;var d=gfp(CAT[sel],ori);setPl(function(p){return p.concat([{id:Date.now(),fid:sel,x:cx,y:cy,fw:d.w,fh:d.h,ori:ori}]);});}
+  function onMove(e){var r=e.currentTarget.getBoundingClientRect(),gx=Math.floor((e.clientX-r.left-WT)/CELL),gy=Math.floor((e.clientY-r.top-WT)/CELL);if(sel!==null)setHov({x:Math.max(0,Math.min(rW-1,gx)),y:Math.max(0,Math.min(rH-1,gy))});}
+  function onWheel(e){e.preventDefault();setOri(function(o){return(o+(e.deltaY>0?1:3))%4;});}
+  var hfp=sel!==null&&hov?gfp(CAT[sel],ori):null,hv=sel!==null&&hov?chkV(sel,hov.x,hov.y,ori):false;
+  var rw=useMemo(function(){return calc(pl,dWall,eDP,grid,eWW,eWP,rW,rH,winW);},[pl,eDP,grid,eWW,eWP,rW,rH,winW]);
+  // Hover
+  var hovEl=null;
+  if(hfp&&hov){var hx=hov.x*CELL,hy=hov.y*CELL,hw=hfp.w*CELL,hh=hfp.h*CELL,fc=CC[CAT[sel].c],hc=hv?fc:"#E53935",hzE=[];
+    if(hv){var tp={fid:sel,x:hov.x,y:hov.y,fw:hfp.w,fh:hfp.h,ori:ori},hzR=zoneRects(tp);for(var zi=0;zi<hzR.length;zi++){var z=hzR[zi];hzE.push(<rect key={"z"+zi} x={z.x*CELL+1} y={z.y*CELL+1} width={z.w*CELL-2} height={z.h*CELL-2} fill="none" stroke={fc} strokeWidth={1.2} strokeDasharray="3,2" opacity={0.5} rx={1}/>);}}
+    var fls=[];if(hv){var sp=CAT[sel];if(sp.z3){if(ori===0||ori===2){fls.push({x1:hx,y1:hy,x2:hx+hw,y2:hy});fls.push({x1:hx,y1:hy+hh,x2:hx+hw,y2:hy+hh});fls.push(ori===0?{x1:hx+hw,y1:hy,x2:hx+hw,y2:hy+hh}:{x1:hx,y1:hy,x2:hx,y2:hy+hh});}else{fls.push({x1:hx,y1:hy,x2:hx,y2:hy+hh});fls.push({x1:hx+hw,y1:hy,x2:hx+hw,y2:hy+hh});fls.push(ori===1?{x1:hx,y1:hy+hh,x2:hx+hw,y2:hy+hh}:{x1:hx,y1:hy,x2:hx+hw,y2:hy});}}else{if(ori===0)fls.push({x1:hx,y1:hy+hh,x2:hx+hw,y2:hy+hh});else if(ori===1)fls.push({x1:hx+hw,y1:hy,x2:hx+hw,y2:hy+hh});else if(ori===2)fls.push({x1:hx,y1:hy,x2:hx+hw,y2:hy});else fls.push({x1:hx,y1:hy,x2:hx,y2:hy+hh});}}
+    hovEl=<g style={{pointerEvents:"none"}}><rect x={hx+.5} y={hy+.5} width={hw-1} height={hh-1} fill={hc} opacity={0.1} rx={1.5} stroke={hc} strokeWidth={1.2} strokeDasharray="3,2"/>{fls.map(function(f,i){return <line key={i} x1={f.x1} y1={f.y1} x2={f.x2} y2={f.y2} stroke={hc} strokeWidth={2.5} strokeLinecap="round" opacity={0.7}/>;})}{hzE}</g>;}
+  // Highlights
+  var hlE=[];
+  if(hlM==="avail"){for(var ai=0;ai<rw.aZ.length;ai++){var az=rw.aZ[ai];if(inR(az[0],az[1],rW,rH))hlE.push(<rect key={"a"+ai} x={az[0]*CELL+1} y={az[1]*CELL+1} width={CELL-2} height={CELL-2} fill={LEM} opacity={0.4} rx={1}/>);}}
+  else if(hlM==="disc"){var cL=Math.max(rW,rH)*CELL,a1=rw.fac-Math.PI/4,a2=rw.fac+Math.PI/4;hlE.push(<line key="c1" x1={rw.dcx*CELL} y1={rw.dcy*CELL} x2={rw.dcx*CELL+Math.cos(a1)*cL} y2={rw.dcy*CELL+Math.sin(a1)*cL} stroke={LEM} strokeWidth={1} opacity={0.4} strokeDasharray="4,3"/>);hlE.push(<line key="c2" x1={rw.dcx*CELL} y1={rw.dcy*CELL} x2={rw.dcx*CELL+Math.cos(a2)*cL} y2={rw.dcy*CELL+Math.sin(a2)*cL} stroke={LEM} strokeWidth={1} opacity={0.4} strokeDasharray="4,3"/>);for(var ei=0;ei<rw.exp.length;ei++){var ec=rw.exp[ei];hlE.push(<rect key={"e"+ei} x={ec[0]*CELL+1} y={ec[1]*CELL+1} width={CELL-2} height={CELL-2} fill={LEM} opacity={0.65} rx={1}/>);}if(rw.wBkr){var wb=rw.wBkr;hlE.push(<rect key="wb" x={wb.x*CELL} y={wb.y*CELL} width={wb.fw*CELL} height={wb.fh*CELL} fill={LEM} opacity={0.35} rx={2}/>);}}
+  else if(hlM==="waste"){rw.sw.forEach(function(k){var p=k.split(",");hlE.push(<rect key={"s"+k} x={(+p[0])*CELL+.5} y={(+p[1])*CELL+.5} width={CELL-1} height={CELL-1} fill={LEM} opacity={0.25} rx={.5}/>);});}
+  // Zones, fronts, bodies
+  var zE=[],fE=[];for(var pi=0;pi<pl.length;pi++){var pp=pl[pi],pcc=CC[CAT[pp.fid].c],sp2=CAT[pp.fid],ppx=pp.x*CELL,ppy=pp.y*CELL,ppw=pp.fw*CELL,pph=pp.fh*CELL,wh="rgba(255,255,255,0.5)";
+    var zR2=zoneRects(pp);for(var zi2=0;zi2<zR2.length;zi2++){var z2=zR2[zi2];zE.push(<rect key={"z"+pp.id+"_"+zi2} x={z2.x*CELL+1} y={z2.y*CELL+1} width={z2.w*CELL-2} height={z2.h*CELL-2} fill="none" stroke={pcc} strokeWidth={0.8} strokeDasharray="2,2" opacity={0.3} rx={1}/>);}
+    if(sp2.z3){if(pp.ori===0||pp.ori===2){fE.push(<line key={"ft"+pp.id} x1={ppx} y1={ppy} x2={ppx+ppw} y2={ppy} stroke={wh} strokeWidth={1.5}/>);fE.push(<line key={"fb"+pp.id} x1={ppx} y1={ppy+pph} x2={ppx+ppw} y2={ppy+pph} stroke={wh} strokeWidth={1.5}/>);var fx=pp.ori===0?ppx+ppw:ppx;fE.push(<line key={"ff"+pp.id} x1={fx} y1={ppy} x2={fx} y2={ppy+pph} stroke={wh} strokeWidth={1.5}/>);}else{fE.push(<line key={"fl"+pp.id} x1={ppx} y1={ppy} x2={ppx} y2={ppy+pph} stroke={wh} strokeWidth={1.5}/>);fE.push(<line key={"fr"+pp.id} x1={ppx+ppw} y1={ppy} x2={ppx+ppw} y2={ppy+pph} stroke={wh} strokeWidth={1.5}/>);var fy=pp.ori===1?ppy+pph:ppy;fE.push(<line key={"ff"+pp.id} x1={ppx} y1={fy} x2={ppx+ppw} y2={fy} stroke={wh} strokeWidth={1.5}/>);}}
+    else{var fl2;if(pp.ori===0)fl2={x1:ppx,y1:ppy+pph,x2:ppx+ppw,y2:ppy+pph};else if(pp.ori===1)fl2={x1:ppx+ppw,y1:ppy,x2:ppx+ppw,y2:ppy+pph};else if(pp.ori===2)fl2={x1:ppx,y1:ppy,x2:ppx+ppw,y2:ppy};else fl2={x1:ppx,y1:ppy,x2:ppx,y2:ppy+pph};fE.push(<line key={"fl"+pp.id} x1={fl2.x1} y1={fl2.y1} x2={fl2.x2} y2={fl2.y2} stroke={wh} strokeWidth={1.5}/>);}}
+  var fB=pl.map(function(p){var s=CAT[p.fid],c=CC[s.c],ppx=p.x*CELL,ppy=p.y*CELL,ppw=p.fw*CELL,pph=p.fh*CELL,fs=Math.min(13,Math.max(9,Math.min(ppw,pph)/2.8));
+    return <g key={p.id}><rect x={ppx+.5} y={ppy+.5} width={ppw-1} height={pph-1} fill={c} rx={2}/><Detail px={ppx+.5} py={ppy+.5} pw={ppw-1} ph={pph-1} cat={s.c} item={s} ori={p.ori}/><text x={ppx+ppw/2} y={ppy+pph/2} textAnchor="middle" dominantBaseline="central" fill="#fff" fontSize={fs} fontWeight={700} style={{pointerEvents:"none"}}>{s.n}</text></g>;});
+  // Chair in desk zone
+  var chE=[];for(var di=0;di<pl.length;di++){var dk=pl[di];if(CAT[dk.fid].c!=="desk")continue;var csz=4*CELL,dc=CC.desk,ccx,ccy,bo;if(dk.ori===0){ccx=dk.x*CELL+(dk.fw*CELL-csz)/2;ccy=dk.y*CELL+dk.fh*CELL;bo=2;}else if(dk.ori===1){ccx=dk.x*CELL+dk.fw*CELL;ccy=dk.y*CELL+(dk.fh*CELL-csz)/2;bo=3;}else if(dk.ori===2){ccx=dk.x*CELL+(dk.fw*CELL-csz)/2;ccy=dk.y*CELL-csz;bo=0;}else{ccx=dk.x*CELL-csz;ccy=dk.y*CELL+(dk.fh*CELL-csz)/2;bo=1;}var bll;if(bo===0)bll={x1:ccx+3,y1:ccy+2,x2:ccx+csz-3,y2:ccy+2};else if(bo===1)bll={x1:ccx+csz-2,y1:ccy+3,x2:ccx+csz-2,y2:ccy+csz-3};else if(bo===2)bll={x1:ccx+3,y1:ccy+csz-2,x2:ccx+csz-3,y2:ccy+csz-2};else bll={x1:ccx+2,y1:ccy+3,x2:ccx+2,y2:ccy+csz-3};chE.push(<g key={"ch"+dk.id}><rect x={ccx+.5} y={ccy+.5} width={csz-1} height={csz-1} fill={dc} opacity={0.35} rx={2}/><line x1={bll.x1} y1={bll.y1} x2={bll.x2} y2={bll.y2} stroke="rgba(255,255,255,0.5)" strokeWidth={1.5} strokeLinecap="round"/><text x={ccx+csz/2} y={ccy+csz/2+1} textAnchor="middle" dominantBaseline="central" fill="rgba(255,255,255,0.7)" fontSize={9} fontWeight={600}>Chair</text></g>);}
+  // Grid covers full observation (GW×GH)
+  var gE=[];for(var gi=1;gi<GH;gi++)gE.push(<line key={"h"+gi} x1={0} y1={gi*CELL} x2={svgW} y2={gi*CELL} stroke="#E8E4DE" strokeWidth={.5}/>);for(var gj=1;gj<GW;gj++)gE.push(<line key={"v"+gj} x1={gj*CELL} y1={0} x2={gj*CELL} y2={svgH} stroke="#E8E4DE" strokeWidth={.5}/>);
+  var swE=[];swing.forEach(function(k){var p=k.split(",");swE.push(<rect key={k} x={(+p[0])*CELL} y={(+p[1])*CELL} width={CELL} height={CELL} fill={GRAY} opacity={0.04}/>);});
+  // Outside-room area (wall fill)
+  var outE=[];
+  if(rW<GW)outE.push(<rect key="oR" x={rmW} y={0} width={svgW-rmW} height={svgH} fill={WALLC} opacity={0.5}/>);
+  if(rH<GH)outE.push(<rect key="oB" x={0} y={rmH} width={rmW} height={svgH-rmH} fill={WALLC} opacity={0.5}/>);
+  // Door on room boundary (bottom wall)
+  var dClr=<rect x={eDP*CELL-1} y={rmH} width={DW*CELL+2} height={WT+1} fill="#fff"/>;
+  // Window on room boundary
+  var wEl;if(isWH){var wy=eWW==="top"?-WT:rmH,wx1=eWP*CELL,wx2=(eWP+winW)*CELL;wEl=<g><rect x={wx1} y={wy} width={wx2-wx1} height={WT} fill="#fff"/><rect x={wx1+1} y={wy+1} width={wx2-wx1-2} height={WT-2} fill="#DAEDF8" opacity={0.6}/><line x1={wx1} y1={wy} x2={wx2} y2={wy} stroke={GRAY} strokeWidth={1.2}/><line x1={wx1} y1={wy+WT} x2={wx2} y2={wy+WT} stroke={GRAY} strokeWidth={1.2}/></g>;}
+  else{var wxx=eWW==="left"?-WT:rmW,wy1=eWP*CELL,wy2=(eWP+winW)*CELL;wEl=<g><rect x={wxx} y={wy1} width={WT} height={wy2-wy1} fill="#fff"/><rect x={wxx+1} y={wy1+1} width={WT-2} height={wy2-wy1-2} fill="#DAEDF8" opacity={0.6}/><line x1={wxx} y1={wy1} x2={wxx} y2={wy2} stroke={GRAY} strokeWidth={1.2}/><line x1={wxx+WT} y1={wy1} x2={wxx+WT} y2={wy2} stroke={GRAY} strokeWidth={1.2}/></g>;}
+  // Click targets cover full observation
+  var tgt=[];for(var yi=0;yi<GH;yi++)for(var xi=0;xi<GW;xi++){(function(tx,ty){tgt.push(<rect key={tx+","+ty} x={tx*CELL} y={ty*CELL} width={CELL} height={CELL} fill="transparent" style={{cursor:sel!==null&&tx<rW&&ty<rH?"crosshair":"default"}} onMouseEnter={function(){setHov({x:tx,y:ty});}} onClick={function(){doPlace(tx,ty);}}/>);})(xi,yi);}
+
+  return(<div style={{padding:24,display:"flex",justifyContent:"center"}}>
+    <div style={{maxWidth:1020}}>
+      <h1 style={{fontSize:28,fontWeight:700,fontStyle:"italic",color:"#C03030",margin:"0 0 1px",fontFamily:"Georgia,serif"}}>my little bedroom</h1>
+      <p style={{fontSize:10,color:"#aaa",margin:"0 0 14px"}}>MDP: state = grid · action = place furniture · R = Availability - Discomfort - Waste</p>
+      <div style={{display:"flex",gap:16}}>
+        <div>
+          <svg width={svgW+WT*2} height={svgH+WT*2} style={{background:"#fff",display:"block"}} onMouseMove={onMove} onMouseLeave={function(){setHov(null);}} onWheel={onWheel}>
+            <g transform={"translate("+WT+","+WT+")"}>{gE}{outE}{swE}
+              <rect x={-WT} y={-WT} width={rmW+WT*2} height={WT} fill={WALLC}/><rect x={-WT} y={rmH} width={rmW+WT*2} height={WT} fill={WALLC}/><rect x={-WT} y={0} width={WT} height={rmH} fill={WALLC}/><rect x={rmW} y={0} width={WT} height={rmH} fill={WALLC}/>
+              <rect x={-WT} y={-WT} width={rmW+WT*2} height={rmH+WT*2} fill="none" stroke="#999" strokeWidth={1}/>
+              <rect x={0} y={0} width={svgW} height={svgH} fill="none" stroke="#ddd" strokeWidth={.5} strokeDasharray="2,2"/>
+              {dClr}<path d={dArc.arc} fill="none" stroke={GRAY} strokeWidth={.8} strokeDasharray="3,2" opacity={.5}/><line x1={dArc.hx} y1={dArc.hy} x2={dArc.lx} y2={dArc.ly} stroke={GRAY} strokeWidth={1.2} opacity={.45}/>
+              {wEl}{zE}{chE}{fB}{fE}{hlE}{hovEl}{tgt}</g>
+          </svg>
+          <div style={{display:"flex",gap:10,marginTop:5,fontSize:10,color:"#999"}}><span>{pl.length+" items \u00b7 room "+(rW*GRID).toFixed(1)+"\u00d7"+(rH*GRID).toFixed(1)+"m \u00b7 obs "+GW+"\u00d7"+GH}</span><div style={{marginLeft:"auto",display:"flex",gap:6}}><button onClick={function(){setPl(function(p){return p.slice(0,-1);});}} className="btn" style={{fontSize:10,color:"#999"}}>undo</button><button onClick={function(){setPl([]);}} className="btn" style={{fontSize:10,color:"#bbb"}}>clear</button></div></div>
+          <div className="card" style={{marginTop:8}}>
+            <div className="card-title">Reward</div>
+            <div className="card-hint">click each row to visualize</div>
+            <div style={{fontFamily:"monospace",fontSize:11}}>
+              {[["avail","Availability",rw.av,rw.aP,"+",false],["disc","Discomfort",rw.disc,rw.dd,"\u2212",true],["waste","Waste",rw.wst,rw.wd,"\u2212",true]].map(function(r){return <div key={r[0]} onClick={function(){setHlM(hlM===r[0]?null:r[0]);}} style={{display:"flex",alignItems:"center",padding:"5px 6px",marginBottom:2,cursor:"pointer",borderRadius:4,background:hlM===r[0]?LEM+"25":"transparent"}}><span style={{color:"#444",fontWeight:700,minWidth:90,fontSize:12}}>{r[1]}</span><span style={{color:"#aaa",fontSize:9,flex:1,marginLeft:8,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{r[3]}</span><span style={{fontWeight:700,color:r[5]?"#c44":"#333",minWidth:40,textAlign:"right",fontSize:13}}>{r[5]&&r[2]>0?r[4]+r[2]:r[4]+r[2]}</span></div>;})}
+              <div style={{display:"flex",alignItems:"center",padding:"5px 6px",borderTop:"1px solid #eee",marginTop:2}}><span style={{fontWeight:700,color:"#333",fontSize:13}}>Total</span><span style={{marginLeft:"auto",fontSize:22,fontWeight:700,fontFamily:"Georgia,serif"}}>{rw.tot}</span></div>
+            </div>
+          </div>
+        </div>
+        <div style={{flex:"0 0 230px",minWidth:190}}>
+          <div className="card">
+            <div className="card-title">Environment</div>
+            <div className="card-hint">room size, door & window</div>
+            <div style={{fontSize:11,marginBottom:4}}>
+              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}><span style={{color:"#555",fontWeight:600,minWidth:36}}>Room</span><input type="range" min={14} max={26} value={rW} onChange={function(e){setRW(+e.target.value);setPl([]);}} style={{width:55}}/><span style={{color:"#888",fontSize:10}}>{rW}</span><input type="range" min={18} max={22} value={rH} onChange={function(e){setRH(+e.target.value);setPl([]);}} style={{width:35}}/><span style={{color:"#888",fontSize:10}}>{rH}</span></div>
+              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}><span style={{color:"#555",fontWeight:600,minWidth:36}}>Door</span><input type="range" min={0} max={maxDP} value={eDP} onChange={function(e){setDPos(+e.target.value);setPl([]);}} style={{width:100}}/></div>
+              <div style={{display:"flex",alignItems:"center",gap:4}}><span style={{color:"#555",fontWeight:600,minWidth:36}}>Win</span>{vww.map(function(w){return <button key={w} onClick={function(){setWWall(w);}} className={"btn btn-wall"+(eWW===w?" active":"")}>{w}</button>;})}<span style={{color:"#bbb",fontSize:9,marginLeft:4}}>{winW+" cells"}</span></div>
+            </div>
+          </div>
+          <div className="card">
+            <div className="card-title">Catalog</div>
+            <div className="card-hint">select, scroll to rotate, click to place</div>
+            <div style={{display:"flex",gap:3,marginBottom:8}}>{["\u2191","\u2192","\u2193","\u2190"].map(function(l,i){return <button key={i} onClick={function(){setOri(i);}} className="btn" style={{width:30,height:26,borderRadius:4,fontSize:14,background:ori===i?"#f0eeea":"transparent",color:ori===i?"#333":"#ddd",fontWeight:ori===i?600:400}}>{l}</button>;})}</div>
+            {CATS.map(function(cat){var items=[];for(var ci=0;ci<CAT.length;ci++)if(CAT[ci].c===cat)items.push({sp:CAT[ci],idx:ci});var c=CC[cat];
+              return <div key={cat} style={{marginBottom:8}}>
+                <div className="cat-label">{cat.toUpperCase()+" \u00b7 "+CATDESC[cat]}</div>
+                <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{items.map(function(it){var d=gfp(it.sp,ori),on=sel===it.idx;return <button key={it.idx} onClick={function(){setSel(on?null:it.idx);}} className="btn" style={{padding:"4px 6px",borderRadius:4,background:on?c+"20":"transparent",color:on?"#222":"#888",fontSize:11,fontWeight:on?600:400,display:"flex",alignItems:"center",gap:3}}><Thumb w={it.sp.w} h={it.sp.h} color={c}/><div><div>{it.sp.n}</div><div style={{fontSize:8,color:"#bbb"}}>{(d.w*GRID).toFixed(2)+"\u00d7"+(d.h*GRID).toFixed(2)}</div></div></button>;})}</div></div>;})}
+          </div>
+          {pl.length>0&&<div className="card"><div className="card-title">Placed</div>{pl.map(function(p){return <div key={p.id} style={{fontSize:10,color:"#777",padding:"2px 0",display:"flex",alignItems:"center",gap:5}}><div style={{width:5,height:5,borderRadius:1.5,background:CC[CAT[p.fid].c]}}/><span>{CAT[p.fid].n}</span><span style={{color:"#ccc",fontSize:8}}>{"("+p.x+","+p.y+") "+["\u2191","\u2192","\u2193","\u2190"][p.ori]}</span></div>;})}</div>}
+        </div>
+      </div>
+    </div>
+  </div>);
+}
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script></body></html>
