@@ -2,6 +2,17 @@
 
 设计已定型，100K pilot 验证有效（total=4.87）。下面是当前版本的核心思路、上手命令和可选调整方向。
 
+**预期评分参考**（基于 20 分总分）
+
+| 维度 | 满分 | 估计 | 备注 |
+|------|------|------|------|
+| 🆕 Novelty | 5 | 4-5 | 卧室任务 + reward 4 因子 + factored heads + hard/soft 分离都是亮点 |
+| 📐 Formalism | 2 | 2 | spec 完整，MDP 描述清楚 |
+| 💻 Environment | 3 | 3 | env 干净，mask + render + verify 全套 |
+| 🎬 Showcase | 5 | 4-5 | 取决于视频质量（random vs trained 对比鲜明）|
+| 📈 Training process | 5 | 4-5 | reward 设计迭代 + curve + ablation 都是讲料 |
+| **总计** | **20** | **17-20** | 多做点 ablation 和报告打磨能稳到 19+ |
+
 ---
 
 ## 当前版本核心
@@ -93,13 +104,55 @@ rm -rf runs/<run_name>
 
 ---
 
+## 已知限制（写报告时可以提，也是潜在改进方向）
+
+**1. 床的功能区不受 mask 保护**
+
+```python
+# action_masks() 里:
+if CATALOG[p.fid].cat == "bed":
+    continue   # 床的 zone 故意跳过，允许 nightstand 贴床头
+```
+
+后果：其他家具（desk / wardrobe / cabinet）**可以放进床的 zone 里**，理论上可能出现"衣柜挡在床前"这种不合理布局。当前 pilot 实测影响很小（agent 学到了合理布局），但严格说是个设计漏洞。
+
+**2. 床自己的合法性条件过于宽松**
+
+```python
+# 当前: partial=True 意思是 3 个 zone 加起来 ≥ 1 个 cell 可用即可
+# 更严的版本会要求"至少一个 zone 完整可用"
+```
+
+意味着可能允许"床三面顶墙、只剩 1 格空地"这种极端配置。pilot 没看到明显问题，但放任 RL 学贴墙时可能撞到这个。
+
+**3. 部分超参是"魔法数字"**
+
+- `FACTOR_FLOOR = 0.3`（privacy/light 的下限）
+- `0.7`（线性 remap 的系数，即 1 − FACTOR_FLOOR）
+- `D_PAIR = 4`（nightstand 配对距离衰减）
+- `NIGHTSTAND_PAIR_BONUS = 1.0`
+
+都没系统调过，跑通就用了。
+
+**4. 单 seed 训练**
+
+pilot 只跑了 seed=0。如果想报告里加 mean ± std，需要 3-5 个 seed 重跑。
+
+**5. Efficiency 学习慢**
+
+100K pilot 里 efficiency 从 0.58 涨到 0.64，提升不大。500K 可能涨到 0.70+，但贴墙的 emergent 行为需要更多步数。
+
+---
+
 ## 进一步实验方向（可选）
 
-如果想给报告加分，几个值得做的：
+如果想给报告加分，从上面几个限制入手都行。具体推荐：
 
-- **Ablation study**：去掉 bed-first 或某个 reward 因子，对比 eval reward → 证明 mask / factor 的必要性
-- **多 seed 实验**：跑 3 个 seed 看 reward 方差
-- **Reward landscape audit**：`python reward_audit.py --n 2000 --save plots/audit.png`
+- **Ablation study**（性价比最高）：去掉 bed-first 或某个 reward 因子，对比 eval reward → 直接证明 mask / factor 的必要性
+- **多 seed 实验**：跑 3 个 seed 看 reward 方差，报告里加 error bar
+- **修床 zone 保护**：让 desk/wardrobe/cabinet 不能进床 zone（保留 nightstand 例外），看 reward 是否提升
+- **Reward landscape audit**：`python reward_audit.py --n 2000 --save plots/audit.png` → 生成 reward 分布图加报告
+- **训练 500K**：当前 100K 已经 work，500K 应该能到 5.5-6.0 区间
 
 都不是必须，看你时间。
 
