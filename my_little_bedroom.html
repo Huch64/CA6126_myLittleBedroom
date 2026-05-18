@@ -158,7 +158,64 @@ function App(){
   var swing=useMemo(function(){return mkSwing(dWall,eDP,rW,rH);},[dWall,eDP,rW,rH]);
   var dArc=useMemo(function(){return mkArc(dWall,eDP,rW,rH);},[dWall,eDP,rW,rH]);
   var grid=useMemo(function(){var g=[];for(var y=0;y<rH;y++){g[y]=[];for(var x=0;x<rW;x++)g[y][x]=0;}for(var i=0;i<pl.length;i++){var p=pl[i];for(var dy=0;dy<p.fh;dy++)for(var dx=0;dx<p.fw;dx++)if(inR(p.x+dx,p.y+dy,rW,rH))g[p.y+dy][p.x+dx]=1;}return g;},[pl,rW,rH]);
-  var chkV=useCallback(function(fid,x,y,o){var d=gfp(CAT[fid],o);if(x<0||y<0||x+d.w>rW||y+d.h>rH)return false;for(var dy=0;dy<d.h;dy++)for(var dx=0;dx<d.w;dx++){if(grid[y+dy][x+dx]>0)return false;if(swing.has((x+dx)+","+(y+dy)))return false;}return true;},[grid,swing,rW,rH]);
+  // chkV mirrors env.py's action_masks logic exactly:
+  //   1. Geometric: in bounds, no overlap with placed furniture, not in door swing
+  //   2. Bed-first: step 0 must be bed
+  //   3. Per-cat count limit (MAXC: 1 bed, 1 desk, 1 wardrobe, 1 cabinet, 2 nightstand)
+  //   4. Footprint can't fall inside any non-bed piece's functional zone
+  //   5. Own zone must be valid (partial=True for bed, partial=False for others)
+  var chkV=useCallback(function(fid,x,y,o){
+    var sp=CAT[fid],d=gfp(sp,o);
+    // 1. geometric basic
+    if(x<0||y<0||x+d.w>rW||y+d.h>rH) return false;
+    for(var dy=0;dy<d.h;dy++) for(var dx=0;dx<d.w;dx++){
+      if(grid[y+dy][x+dx]>0) return false;
+      if(swing.has((x+dx)+","+(y+dy))) return false;
+    }
+    // 2. bed-first
+    if(pl.length===0 && sp.c!=="bed") return false;
+    // 3. cat count limit
+    var ccount=0;
+    for(var pi=0;pi<pl.length;pi++) if(CAT[pl[pi].fid].c===sp.c) ccount++;
+    if(ccount >= (MAXC[sp.c]||1)) return false;
+    // 4. footprint can't overlap any non-bed piece's zone
+    for(var pi2=0;pi2<pl.length;pi2++){
+      if(CAT[pl[pi2].fid].c==="bed") continue;
+      var zRect=zoneRects(pl[pi2]);
+      for(var zi=0;zi<zRect.length;zi++){
+        var zr=zRect[zi];
+        var ox=Math.max(x,zr.x), oy=Math.max(y,zr.y);
+        var oxe=Math.min(x+d.w, zr.x+zr.w), oye=Math.min(y+d.h, zr.y+zr.h);
+        if(ox<oxe && oy<oye) return false;
+      }
+    }
+    // 5. own zone validity
+    var tp={fid:fid,x:x,y:y,fw:d.w,fh:d.h,ori:o};
+    var ownZ=zoneRects(tp);
+    if(sp.z3){
+      // bed: partial=True, at least one cell in any zone must be in-bounds + empty
+      var anyEmpty=false;
+      for(var zi2=0;zi2<ownZ.length && !anyEmpty;zi2++){
+        var zr2=ownZ[zi2];
+        for(var zy=0;zy<zr2.h && !anyEmpty;zy++) for(var zx=0;zx<zr2.w;zx++){
+          var cx=zr2.x+zx, cy=zr2.y+zy;
+          if(inR(cx,cy,rW,rH) && grid[cy][cx]===0){anyEmpty=true;break;}
+        }
+      }
+      if(!anyEmpty) return false;
+    }else{
+      // non-bed: every zone cell must be in-bounds AND empty
+      for(var zi3=0;zi3<ownZ.length;zi3++){
+        var zr3=ownZ[zi3];
+        for(var zy2=0;zy2<zr3.h;zy2++) for(var zx2=0;zx2<zr3.w;zx2++){
+          var cx2=zr3.x+zx2, cy2=zr3.y+zy2;
+          if(!inR(cx2,cy2,rW,rH)) return false;
+          if(grid[cy2][cx2]>0) return false;
+        }
+      }
+    }
+    return true;
+  },[grid,swing,rW,rH,pl]);
   function doPlace(cx,cy){if(sel===null||!chkV(sel,cx,cy,ori))return;var d=gfp(CAT[sel],ori);setPl(function(p){return p.concat([{id:Date.now(),fid:sel,x:cx,y:cy,fw:d.w,fh:d.h,ori:ori}]);});}
   function onMove(e){var r=e.currentTarget.getBoundingClientRect(),gx=Math.floor((e.clientX-r.left-WT)/CELL),gy=Math.floor((e.clientY-r.top-WT)/CELL);if(sel!==null)setHov({x:Math.max(0,Math.min(rW-1,gx)),y:Math.max(0,Math.min(rH-1,gy))});}
   function onWheel(e){e.preventDefault();setOri(function(o){return(o+(e.deltaY>0?1:3))%4;});}
@@ -238,10 +295,21 @@ function App(){
             <div className="card-title">Catalog</div>
             <div className="card-hint">select, scroll to rotate, click to place</div>
             <div style={{display:"flex",gap:3,marginBottom:8}}>{["\u2191","\u2192","\u2193","\u2190"].map(function(l,i){return <button key={i} onClick={function(){setOri(i);}} className="btn" style={{width:30,height:26,borderRadius:4,fontSize:14,background:ori===i?"#f0eeea":"transparent",color:ori===i?"#333":"#ddd",fontWeight:ori===i?600:400}}>{l}</button>;})}</div>
-            {CATS.map(function(cat){var items=[];for(var ci=0;ci<CAT.length;ci++)if(CAT[ci].c===cat)items.push({sp:CAT[ci],idx:ci});var c=CC[cat];
-              return <div key={cat} style={{marginBottom:8}}>
-                <div className="cat-label">{cat.toUpperCase()+" \u00b7 "+CATDESC[cat]}</div>
-                <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{items.map(function(it){var d=gfp(it.sp,ori),on=sel===it.idx;return <button key={it.idx} onClick={function(){setSel(on?null:it.idx);}} className="btn" style={{padding:"4px 6px",borderRadius:4,background:on?c+"20":"transparent",color:on?"#222":"#888",fontSize:11,fontWeight:on?600:400,display:"flex",alignItems:"center",gap:3}}><Thumb w={it.sp.w} h={it.sp.h} color={c}/><div><div>{it.sp.n}</div><div style={{fontSize:8,color:"#bbb"}}>{(d.w*GRID).toFixed(2)+"\u00d7"+(d.h*GRID).toFixed(2)}</div></div></button>;})}</div></div>;})}
+            <div style={{fontSize:9,color:"#c44",marginBottom:6,fontStyle:"italic"}}>
+              {pl.length===0 ? "step 0: must place a bed first" :
+               pl.length>=1 && !pl.some(function(p){return CAT[p.fid].c==="bed"}) ? "still need a bed before DONE" :
+               "any category allowed"}
+            </div>
+            {CATS.map(function(cat){
+              var items=[];for(var ci=0;ci<CAT.length;ci++)if(CAT[ci].c===cat)items.push({sp:CAT[ci],idx:ci});
+              var c=CC[cat];
+              // determine if category is mask-allowed at this step
+              var catBlocked = (pl.length===0 && cat!=="bed");
+              var catCount=0; for(var pcc=0;pcc<pl.length;pcc++) if(CAT[pl[pcc].fid].c===cat) catCount++;
+              if(catCount>=(MAXC[cat]||1)) catBlocked=true;
+              return <div key={cat} style={{marginBottom:8,opacity:catBlocked?0.35:1}}>
+                <div className="cat-label">{cat.toUpperCase()+" \u00b7 "+CATDESC[cat]+(catBlocked?" (mask blocked)":"")}</div>
+                <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{items.map(function(it){var d=gfp(it.sp,ori),on=sel===it.idx;return <button key={it.idx} onClick={function(){if(!catBlocked) setSel(on?null:it.idx);}} className="btn" style={{padding:"4px 6px",borderRadius:4,background:on?c+"20":"transparent",color:on?"#222":"#888",fontSize:11,fontWeight:on?600:400,display:"flex",alignItems:"center",gap:3,cursor:catBlocked?"not-allowed":"pointer"}}><Thumb w={it.sp.w} h={it.sp.h} color={c}/><div><div>{it.sp.n}</div><div style={{fontSize:8,color:"#bbb"}}>{(d.w*GRID).toFixed(2)+"\u00d7"+(d.h*GRID).toFixed(2)}</div></div></button>;})}</div></div>;})}
           </div>
           {pl.length>0&&<div className="card"><div className="card-title">Placed</div>{pl.map(function(p){return <div key={p.id} style={{fontSize:10,color:"#777",padding:"2px 0",display:"flex",alignItems:"center",gap:5}}><div style={{width:5,height:5,borderRadius:1.5,background:CC[CAT[p.fid].c]}}/><span>{CAT[p.fid].n}</span><span style={{color:"#ccc",fontSize:8}}>{"("+p.x+","+p.y+") "+["\u2191","\u2192","\u2193","\u2190"][p.ori]}</span></div>;})}</div>}
         </div>

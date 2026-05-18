@@ -66,11 +66,22 @@ python plot_training.py --run <run_name>
 | 指标 | 终态期望 |
 |------|---------|
 | `bed` | 100% |
-| `total` | 4.5 ~ 5.5+ |
+| `total` | 6 ~ 8 |
 | `priv` | 0.85+ |
 | `light` | 0.90+ |
-| `eff` | 0.60+ |
+| `eff` | 0.65+ |
 | `n_pl` | 4-5 |
+
+**reward 上限基线**（用 random search + greedy 探索 30 个房间得出）：
+
+| baseline | total mean | 说明 |
+|----------|-----------|------|
+| 单次 random | 3.2 | 不学习的下限 |
+| 100K pilot (我们当前) | 4.9 | 训练 100K 步后 |
+| best-of-500 random | **9.9** | 同房间试 500 次取最好（理论近似上限） |
+| best-of-3000 random | ~10-11 | 更多采样的上限估计 |
+
+所以训练好的 agent 目标是**逼近 best-of-N**，不是单 random。500K 训练应该能爬到 6-8，多 seed + 调参可能到 8+。
 
 ---
 
@@ -141,6 +152,10 @@ pilot 只跑了 seed=0。如果想报告里加 mean ± std，需要 3-5 个 seed
 **5. Efficiency 学习慢**
 
 100K pilot 里 efficiency 从 0.58 涨到 0.64，提升不大。500K 可能涨到 0.70+，但贴墙的 emergent 行为需要更多步数。
+
+**6. 跟"近似上限"还有差距**
+
+用 random search 估计上限（同房间试 500 次取最好）：mean ≈ 10。我们 100K pilot 是 4.9——**离上限还有 2 倍 gap**。500K 训练或许能爬到 6-8，但是否能到 9-10 不确定。这是值得探索的方向（更多 training + 调超参）。
 
 ---
 

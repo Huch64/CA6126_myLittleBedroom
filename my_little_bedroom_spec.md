@@ -76,14 +76,22 @@ a = (furniture_id, x, y, orientation) | DONE
 
 Flat index: fid × (26×22×4) + x × (22×4) + y × 4 + ori
 Total: 18 × 26 × 22 × 4 + 1 = 41,185
-Most actions masked (overlap / out of bounds / door swing).
-DONE is additionally masked until ≥ 1 bed has been placed
-(semantic constraint: bedroom must have a bed).
-Step 0 is restricted to bed actions only (bed-first constraint), so the
-bed is always placed before any other piece can claim the room's wall
-space — necessary because the bed is the widest piece (14 cells) and
-otherwise often becomes unplaceable late in an episode.
 ```
+
+**Action mask** (computed per step, ~10K-16K valid out of 41,185):
+
+1. **Geometric**: no overlap, in-bounds, not in door swing
+2. **Bed-first**: step 0 restricted to bed actions only (avoids "bed unplaceable late")
+3. **Per-category limit**: `MAX_PER_CAT` enforced (1 bed, 1 desk, 1 wardrobe, 1 cabinet, 2 nightstand)
+4. **Zone clearance**: new placement can't fall in any non-bed piece's functional zone
+5. **Own zone validity**: bed uses `partial=True` (≥ 1 zone cell accessible);
+   other furniture requires the full functional zone clear + in-bounds
+6. **DONE gate**: blocked until ≥ 1 bed has been placed (escape valve if no
+   valid placement remains, with `R=0` reward override at end)
+
+The interactive HTML preview (`my_little_bedroom.html`) mirrors all five
+rules — try selecting a non-bed piece on a fresh room and the catalog
+button greys out, hovering shows red highlights.
 
 ### Transition *T*
 
