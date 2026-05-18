@@ -1,8 +1,9 @@
 # 🏠 My Little Bedroom — CA6126 RL Final Project
 
 > A MaskablePPO agent learns to furnish a randomized bedroom.
-> Reward: `R = A × privacy × light × efficiency`
+> Reward: `R = Availability × privacy × light × efficiency + diversity`
 > &nbsp;&nbsp;privacy / light: linear remap to [0.3, 1]; efficiency: full [0, 1] for strong wall-hugging signal — see [spec](my_little_bedroom_spec.md)
+> &nbsp;&nbsp;diversity: `+1` per distinct furniture category placed (max +5), added outside the product.
 > &nbsp;&nbsp;Semantic gate: `R = 0` if no bed (bedroom must have a bed).
 
 Full MDP spec: [`my_little_bedroom_spec.md`](my_little_bedroom_spec.md)

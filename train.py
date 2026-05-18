@@ -168,7 +168,7 @@ class EpisodeBreakdownLogger(BaseCallback):
 
     HEADER = [
         "step", "ep_idx",
-        "total", "availability",
+        "total", "availability", "diversity", "n_categories",
         "privacy", "light", "efficiency",
         "privacy_loss", "light_loss", "waste_loss",
         "n_placed", "n_unique_cats",
@@ -202,6 +202,7 @@ class EpisodeBreakdownLogger(BaseCallback):
             self._writer.writerow([
                 self.num_timesteps, self._ep_count,
                 bd["total"], bd["availability"],
+                bd.get("diversity", 0.0), bd.get("n_categories", 0),
                 bd["privacy"], bd["light"], bd["efficiency"],
                 bd["privacy_loss"], bd["light_loss"], bd["waste_loss"],
                 len(cats), len(set(cats)),
@@ -216,6 +217,8 @@ class EpisodeBreakdownLogger(BaseCallback):
             self._fh.flush()
             # TensorBoard aggregates (these show up under custom/ in TB)
             self.logger.record_mean("custom/availability", bd["availability"])
+            self.logger.record_mean("custom/diversity",    bd.get("diversity", 0.0))
+            self.logger.record_mean("custom/n_categories", bd.get("n_categories", 0))
             self.logger.record_mean("custom/privacy",      bd["privacy"])
             self.logger.record_mean("custom/light",        bd["light"])
             self.logger.record_mean("custom/efficiency",   bd["efficiency"])
@@ -231,24 +234,30 @@ class EpisodeBreakdownLogger(BaseCallback):
 
 
 class LiveProgressCallback(BaseCallback):
-    """Prints a rolling-window summary every N episodes — gives a clear
-    "is training going well?" signal directly in stdout, so teammates don't
-    need a separate `tail -f` window. Prints look like:
+    """Prints rolling-window training stats. Shows:
 
-      [live] step=  5624  ep=  1000  total=2.49  priv=0.64  light=0.81 ...
+      [live] 12% step=  5624 ep= 1000  total=2.49 (max 5.8)  priv=0.64
+             light=0.81  eff=0.59  n_pl=4.6  bed=100%  Δ+0.15
 
-    where `total` is the rolling mean of the last `window` episodes.
+    where:
+      - 12%       = fraction of total timesteps completed
+      - total     = rolling mean over last `window` episodes
+      - max       = best total seen in window (probe of upper bound)
+      - Δ         = change vs previous window (trend indicator)
+      - priv/light/eff = rolling means of those factors
+      - bed       = fraction of window episodes with a bed
     """
 
-    HEADER = ("[live] step=  step  ep=     ep  total=##.##  "
-              "priv=#.##  light=#.##  eff=#.##  n_pl=#.#  bed=##%")
-
-    def __init__(self, window: int = 500, every: int = 500):
+    def __init__(self, window: int = 200, every: int = 200,
+                 total_timesteps: int | None = None):
         super().__init__()
         self.window = window
         self.every = every
+        self.total_timesteps = total_timesteps
         self.recent: list[dict] = []
         self._ep_count = 0
+        self._last_mean: float | None = None
+        self._best_seen = 0.0
 
     def _on_step(self) -> bool:
         for info in self.locals.get("infos", []):
@@ -257,8 +266,10 @@ class LiveProgressCallback(BaseCallback):
                 continue
             cats = info.get("cats_placed", [])
             self._ep_count += 1
+            tot = bd["total"]
+            self._best_seen = max(self._best_seen, tot)
             self.recent.append({
-                "total": bd["total"],
+                "total": tot,
                 "priv":  bd["privacy"],
                 "light": bd["light"],
                 "eff":   bd["efficiency"],
@@ -271,11 +282,76 @@ class LiveProgressCallback(BaseCallback):
                 w = self.recent
                 n = len(w)
                 avg = lambda k: sum(r[k] for r in w) / n
-                print(f"[live] step={self.num_timesteps:>6}  ep={self._ep_count:>5}  "
-                      f"total={avg('total'):.2f}  priv={avg('priv'):.2f}  "
-                      f"light={avg('light'):.2f}  eff={avg('eff'):.2f}  "
-                      f"n_pl={avg('n_pl'):.1f}  bed={avg('bed'):.0%}",
+                mean_total = avg("total")
+                max_total = max(r["total"] for r in w)
+                pct = ""
+                if self.total_timesteps:
+                    pct = f"{self.num_timesteps / self.total_timesteps * 100:>4.0f}% "
+                trend = ""
+                if self._last_mean is not None:
+                    delta = mean_total - self._last_mean
+                    arrow = "↑" if delta > 0.02 else ("↓" if delta < -0.02 else "→")
+                    trend = f"  Δ{arrow}{delta:+.2f}"
+                self._last_mean = mean_total
+                print(f"[live] {pct}step={self.num_timesteps:>7}  "
+                      f"ep={self._ep_count:>5}  "
+                      f"total={mean_total:.2f} (max {max_total:.1f}, best {self._best_seen:.1f})  "
+                      f"priv={avg('priv'):.2f}  light={avg('light'):.2f}  eff={avg('eff'):.2f}  "
+                      f"n_pl={avg('n_pl'):.1f}  bed={avg('bed'):.0%}"
+                      f"{trend}",
                       flush=True)
+        return True
+
+
+class MilestoneCallback(BaseCallback):
+    """Prints a banner at every 10% of training progress with a summary
+    of recent performance. Useful for "set it and forget it" runs to spot
+    plateaus or drift at a glance."""
+
+    def __init__(self, total_timesteps: int, n_milestones: int = 10):
+        super().__init__()
+        self.total = total_timesteps
+        self.step_per_milestone = max(total_timesteps // n_milestones, 1)
+        self._next_milestone = self.step_per_milestone
+        self._t0 = time.time()
+        self._recent: list[dict] = []
+
+    def _on_step(self) -> bool:
+        for info in self.locals.get("infos", []):
+            bd = info.get("breakdown")
+            if bd is None:
+                continue
+            cats = info.get("cats_placed", [])
+            self._recent.append({
+                "total": bd["total"], "priv": bd["privacy"],
+                "light": bd["light"], "eff": bd["efficiency"],
+                "n_pl": len(cats),
+                "bed":  1 if "bed" in cats else 0,
+            })
+            if len(self._recent) > 500:
+                self._recent.pop(0)
+        if self.num_timesteps >= self._next_milestone:
+            pct = self.num_timesteps / self.total * 100
+            elapsed = time.time() - self._t0
+            eta = elapsed * (self.total - self.num_timesteps) / max(self.num_timesteps, 1)
+            mins_elapsed = elapsed / 60
+            mins_eta = eta / 60
+            if self._recent:
+                w = self._recent
+                n = len(w)
+                a = lambda k: sum(r[k] for r in w) / n
+                summary = (f"total={a('total'):.2f}  priv={a('priv'):.2f}  "
+                           f"light={a('light'):.2f}  eff={a('eff'):.2f}  "
+                           f"bed={a('bed'):.0%}")
+            else:
+                summary = "(no episodes yet)"
+            print(f"\n{'═'*70}\n"
+                  f"  ★ MILESTONE  {pct:>4.0f}%  step {self.num_timesteps:>8,}/{self.total:,}"
+                  f"   elapsed {mins_elapsed:>5.1f}m   ETA {mins_eta:>5.1f}m\n"
+                  f"  └─ last 500 eps:  {summary}\n"
+                  f"{'═'*70}\n",
+                  flush=True)
+            self._next_milestone += self.step_per_milestone
         return True
 
 
@@ -372,10 +448,15 @@ def main():
 
     # ── callbacks ────────────────────────────────────────
     ep_logger = EpisodeBreakdownLogger(run_dir / "episodes.csv")
-    live_cb = LiveProgressCallback(window=500, every=500)
+    # window=200 / every=200 → progress line every ~1.5 min (vs old 4 min).
+    live_cb = LiveProgressCallback(window=200, every=200,
+                                   total_timesteps=args.timesteps)
+    # Every 10% of training: print a milestone banner with summary.
+    milestone_cb = MilestoneCallback(total_timesteps=args.timesteps,
+                                     n_milestones=10)
     # Periodic checkpoint snapshot (every checkpoint_freq env steps).
     # Useful for crash recovery and analyzing agent at different stages.
-    callbacks = [ep_logger, live_cb]
+    callbacks = [ep_logger, live_cb, milestone_cb]
     if args.checkpoint_freq > 0:
         ckpt_cb = CheckpointCallback(
             save_freq=max(args.checkpoint_freq // args.n_envs, 1),  # per-env counter

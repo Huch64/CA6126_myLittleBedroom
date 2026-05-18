@@ -20,15 +20,15 @@ input[type=range]::-moz-range-thumb{width:14px;height:14px;border-radius:50%;bac
 var useState=React.useState,useMemo=React.useMemo,useCallback=React.useCallback;
 var GRID=0.15,GW=26,GH=22,CELL=18,DW=6,WW=12,WT=CELL,WCOEFF=0.2;
 // Reward v3 (multiplicative, ratio-based) — matches env.py
-// R = A × privacy × light × efficiency
+// R = A × privacy × light × efficiency + diversity
 //   per-piece value = w × h × CELL_REWARD   (linear in area, single knob)
-//   privacy    = max(FLOOR, 1 − pillow_ratio)    (door can't peek at pillow)
-//   light      = max(FLOOR, 1 − window_ratio)    (window not blocked)
-//   efficiency = max(FLOOR, 1 − waste_ratio)     (room walkable)
-// Uniform floor keeps every factor's gradient alive.
+//   privacy    = 1 − 0.7 × exposure_ratio    (床被门看到的加权比例)
+//   light      = 1 − 0.7 × window_ratio      (window not blocked)
+//   efficiency = 1 − waste_ratio             (room walkable, no floor)
+//   diversity  = +1 per distinct category placed (max +5), added OUTSIDE
+//                the product so it isn't multiplied away.
 var CELL_REWARD=0.05;
-var NS_PAIR_BONUS=1.0;
-var D_PAIR=4;
+var DIVERSITY_BONUS_PER_CAT=1.0;
 var FACTOR_FLOOR=0.3;
 var GRAY="#999",LEM="#FFE500",WALLC="#C8C4BE";
 var CC={bed:"#45D468",desk:"#30D4A0",wardrobe:"#30A8D4",cabinet:"#5050D4",nightstand:"#9530D4"};
@@ -56,10 +56,35 @@ function mkArc(dw,dp,rw,rh){var r=DW*CELL,hinge=dp<((dw==="top"||dw==="bottom")?
     var ey=hinge?hy+r:hy-r;var sw2=hinge?(dw==="left"?0:1):(dw==="left"?1:0);
     arc="M"+hx+" "+ey+"A"+r+" "+r+" 0 0 "+sw2+" "+(hx+d2*r)+" "+hy;lx=hx+d2*r;ly=hy;}
   return{hx:hx,hy:hy,lx:lx,ly:ly,arc:arc};}
+var BED_ZONE_LEN=8, BED_ZONE_DEPTH=3;   // 1.2m × 0.45m corridor
 function zoneRects(p){var s=CAT[p.fid],d=s.zd,rs=[],o=p.ori;
-  if(s.z3){if(o===0||o===2){rs.push({x:p.x,y:p.y-d,w:p.fw,h:d});rs.push({x:p.x,y:p.y+p.fh,w:p.fw,h:d});rs.push(o===0?{x:p.x+p.fw,y:p.y,w:d,h:p.fh}:{x:p.x-d,y:p.y,w:d,h:p.fh});}
-  else{rs.push({x:p.x-d,y:p.y,w:d,h:p.fh});rs.push({x:p.x+p.fw,y:p.y,w:d,h:p.fh});rs.push(o===1?{x:p.x,y:p.y+p.fh,w:p.fw,h:d}:{x:p.x,y:p.y-d,w:p.fw,h:d});}}
-  else{if(o===0)rs.push({x:p.x,y:p.y+p.fh,w:p.fw,h:d});else if(o===1)rs.push({x:p.x+p.fw,y:p.y,w:d,h:p.fh});else if(o===2)rs.push({x:p.x,y:p.y-d,w:p.fw,h:d});else rs.push({x:p.x-d,y:p.y,w:d,h:p.fh});}return rs;}
+  if(s.z3){
+    // bed: 2 fixed zones, 8×3 (or 3×8) foot-anchored on each long side
+    var L=BED_ZONE_LEN, D=BED_ZONE_DEPTH;
+    if(o===0){var zx0=p.x+p.fw-L;rs.push({x:zx0,y:p.y-D,w:L,h:D});rs.push({x:zx0,y:p.y+p.fh,w:L,h:D});}
+    else if(o===2){var zx2=p.x;rs.push({x:zx2,y:p.y-D,w:L,h:D});rs.push({x:zx2,y:p.y+p.fh,w:L,h:D});}
+    else if(o===1){var zy1=p.y+p.fh-L;rs.push({x:p.x-D,y:zy1,w:D,h:L});rs.push({x:p.x+p.fw,y:zy1,w:D,h:L});}
+    else{var zy3=p.y;rs.push({x:p.x-D,y:zy3,w:D,h:L});rs.push({x:p.x+p.fw,y:zy3,w:D,h:L});}
+  }else{if(o===0)rs.push({x:p.x,y:p.y+p.fh,w:p.fw,h:d});else if(o===1)rs.push({x:p.x+p.fw,y:p.y,w:d,h:p.fh});else if(o===2)rs.push({x:p.x,y:p.y-d,w:p.fw,h:d});else rs.push({x:p.x-d,y:p.y,w:d,h:p.fh});}return rs;}
+// Helper: list of bed zones currently in-bounds AND fully clear of non-bed
+// furniture. Used both for the "lock last zone" mask invariant and the
+// reward-time corridor safety net (bed availability → 0 if list empty).
+function bedClearZones(bed,pl,grid,rW,rH){
+  var out=[],zs=zoneRects(bed);
+  for(var i=0;i<zs.length;i++){
+    var z=zs[i];
+    if(z.x<0||z.y<0||z.x+z.w>rW||z.y+z.h>rH) continue;
+    var clear=true;
+    for(var zy=z.y;zy<z.y+z.h&&clear;zy++) for(var zx=z.x;zx<z.x+z.w&&clear;zx++){
+      if(grid[zy][zx]!==0){
+        var oc=fatAt(pl,zx,zy);
+        if(!oc||CAT[oc.fid].c!=="bed") clear=false;
+      }
+    }
+    if(clear) out.push(z);
+  }
+  return out;
+}
 function zoneCells(p){var rs=zoneRects(p),c=[];for(var i=0;i<rs.length;i++){var r=rs[i];for(var dy=0;dy<r.h;dy++)for(var dx=0;dx<r.w;dx++)c.push([r.x+dx,r.y+dy]);}return c;}
 function pillowCells(p){var c=[],o=p.ori;if(o===0)for(var i=0;i<p.fh;i++)c.push([p.x,p.y+i]);else if(o===1)for(var i2=0;i2<p.fw;i2++)c.push([p.x+i2,p.y]);else if(o===2)for(var i3=0;i3<p.fh;i3++)c.push([p.x+p.fw-1,p.y+i3]);else for(var i4=0;i4<p.fw;i4++)c.push([p.x+i4,p.y+p.fh-1]);return c;}
 function Detail(props){var px=props.px,py=props.py,pw=props.pw,ph=props.ph,cat=props.cat,item=props.item,ori=props.ori,cx=px+pw/2,cy=py+ph/2,W="rgba(255,255,255,0.45)",WB="rgba(255,255,255,0.6)";
@@ -77,70 +102,103 @@ function flood(grid,dw,dp,rw,rh){var pass=[];for(var y=0;y<rh;y++){pass[y]=[];fo
 function fatAt(pl,x,y){for(var i=0;i<pl.length;i++){var p=pl[i];if(x>=p.x&&x<p.x+p.fw&&y>=p.y&&y<p.y+p.fh)return p;}return null;}
 function calc(pl,dw,dp,grid,ww,wp,rw,rh,wWidth){var sw=pl.length>0?flood(grid,dw,dp,rw,rh):new Set();var i;
   var beds=[];for(i=0;i<pl.length;i++){if(CAT[pl[i].fid].c==="bed")beds.push(pl[i]);}
-  // Per-item value: base = area × CELL_REWARD; nightstand adds distance-decay bonus (capped at NS_PAIR_BONUS, 0 at d≥D_PAIR).
-  // Validity (zone clear, no overlap) is enforced by action mask in env.py; HTML mirrors by always scoring placed pieces.
+  // Per-item value: base = area × CELL_REWARD. Nightstand position is
+  // mask-restricted to the bed headboard slot, so no per-item bonus is
+  // needed. Safety net: a bed with NO clear access zone (both corridors
+  // blocked by non-bed furniture) contributes 0 — mask invariant catches
+  // this in normal play, but this guards against rollouts with mask=False.
+  var bedCorridorOk=true;
+  if(beds.length>0){bedCorridorOk=bedClearZones(beds[0],pl,grid,rw,rh).length>=1;}
   var av=0,aP=[],aZ=[];
   for(i=0;i<pl.length;i++){
     var p=pl[i],sp=CAT[p.fid];
     var val=sp.w*sp.h*CELL_REWARD;
-    if(sp.c==="nightstand"&&beds.length>0){
-      var dMin=Infinity;
-      for(var bi=0;bi<beds.length;bi++){
-        var bd=beds[bi],pc=pillowCells(bd);
-        for(var pi2=0;pi2<pc.length;pi2++){
-          var dd=Math.abs(p.x+p.fw/2-(pc[pi2][0]+0.5))+Math.abs(p.y+p.fh/2-(pc[pi2][1]+0.5));
-          if(dd<dMin)dMin=dd;
-        }
-      }
-      val+=NS_PAIR_BONUS*Math.max(0,1-dMin/D_PAIR);
-    }
+    if(sp.c==="bed"&&!bedCorridorOk) val=0;
     av+=val;
     var zc=zoneCells(p);for(var ai=0;ai<zc.length;ai++)aZ.push(zc[ai]);
     aP.push(sp.n+":"+(Math.round(val*10)/10));
   }
+  // diversity bonus: +1 per distinct furniture category placed (max +5).
+  var catSet={};for(i=0;i<pl.length;i++)catSet[CAT[pl[i].fid].c]=1;
+  var nCats=0;for(var ck in catSet)nCats++;
+  var diversity=DIVERSITY_BONUS_PER_CAT*nCats;
   var dcx=0,dcy=0,fac=0;if(dw==="top"){dcx=dp+DW/2;dcy=0.5;fac=Math.PI/2;}else if(dw==="bottom"){dcx=dp+DW/2;dcy=rh-0.5;fac=-Math.PI/2;}else if(dw==="left"){dcx=0.5;dcy=dp+DW/2;fac=0;}else{dcx=rw-0.5;dcy=dp+DW/2;fac=Math.PI;}
-  // privacy v4 (simplified) \u2014 single angle from door to pillow centroid.
-  // PPT-friendly: no per-cell loop, no Bresenham wardrobe blocking, no
-  // distance term. Wardrobes affect reward only via light/efficiency now.
-  var exp=[],tbc=0,pen=0,tpn=0,pillowRatio=0;
+  // privacy v5 \u2014 per-cell weighted with Bresenham wardrobe occlusion.
+  // For each bed cell in door cone AND not blocked by wardrobe, accumulate
+  // weight (pillow = 2, body = 1). Ratio = exposed_weight / total_weight.
+  var exp=[],tbc=0,pen=0,tpn=0,exposureRatio=0;
   if(beds.length>0){
     var pSet=new Set();
     for(i=0;i<beds.length;i++){var pc=pillowCells(beds[i]);for(var pi=0;pi<pc.length;pi++)pSet.add(pc[pi][0]+","+pc[pi][1]);}
     tpn=pSet.size;
-    // pillow centroid
-    var sumX=0,sumY=0,n=0;
-    pSet.forEach(function(k){var p=k.split(","); sumX+=(+p[0])+0.5; sumY+=(+p[1])+0.5; n++;});
-    var pcx=sumX/n, pcy=sumY/n;
     var coneHalf=Math.PI/4;
-    var angP=Math.atan2(pcy-dcy,pcx-dcx);
-    var dfP=angP-fac;
-    while(dfP>Math.PI)dfP-=2*Math.PI;
-    while(dfP<-Math.PI)dfP+=2*Math.PI;
-    pillowRatio=Math.max(0,1-Math.abs(dfP)/coneHalf);
-    // for HUD: still collect "exposed" cells for visualization
-    for(i=0;i<beds.length;i++){var bb=beds[i];for(var by=0;by<bb.fh;by++)for(var bx=0;bx<bb.fw;bx++){tbc++;var bxc=bb.x+bx+0.5,byc=bb.y+by+0.5,a=Math.atan2(byc-dcy,bxc-dcx),df=a-fac;while(df>Math.PI)df-=2*Math.PI;while(df<-Math.PI)df+=2*Math.PI;if(Math.abs(df)<coneHalf){exp.push([bb.x+bx,bb.y+by]);if(pSet.has((bb.x+bx)+","+(bb.y+by)))pen++;}}}
+    // Pillow weighted 10× body so pillow privacy actually dominates the
+    // ratio (body cells outnumber pillow ~12:1 for Bed 1.2 — needs the
+    // boost to matter). Ratio stays in [0, 1] via normalization.
+    var PILLOW_W=10.0, BODY_W=1.0;
+    var totW=0, expW=0;
+    for(i=0;i<beds.length;i++){
+      var bb=beds[i];
+      for(var by=0;by<bb.fh;by++) for(var bx=0;bx<bb.fw;bx++){
+        tbc++;
+        var gx=bb.x+bx, gy=bb.y+by;
+        var isP=pSet.has(gx+","+gy);
+        var w=isP?PILLOW_W:BODY_W;
+        totW+=w;
+        var bxc=gx+0.5, byc=gy+0.5;
+        var ang=Math.atan2(byc-dcy,bxc-dcx),df=ang-fac;
+        while(df>Math.PI)df-=2*Math.PI;
+        while(df<-Math.PI)df+=2*Math.PI;
+        if(Math.abs(df)<coneHalf){
+          // Bresenham line of sight check, blocked only by wardrobe
+          var blk=false, lx=Math.round(dcx), ly=Math.round(dcy);
+          var adx=Math.abs(gx-lx), ady=Math.abs(gy-ly);
+          var sx=lx<gx?1:-1, sy=ly<gy?1:-1, err=adx-ady;
+          var cx2=lx, cy2=ly, st=0;
+          while(st<100){
+            st++;
+            if(cx2===gx&&cy2===gy) break;
+            var e2=2*err;
+            if(e2>-ady){err-=ady; cx2+=sx;}
+            if(e2<adx){err+=adx; cy2+=sy;}
+            if(cx2===gx&&cy2===gy) break;
+            if(inR(cx2,cy2,rw,rh)&&grid[cy2][cx2]!==0){
+              var blkF=fatAt(pl,cx2,cy2);
+              if(blkF&&CAT[blkF.fid].c==="wardrobe"){blk=true; break;}
+            }
+          }
+          if(!blk){
+            exp.push([gx,gy]);
+            expW+=w;
+            if(isP) pen++;
+          }
+        }
+      }
+    }
+    exposureRatio=totW>0?expW/totW:0;
   }
   var wbn=0,wBkr=null;
   for(var wi=0;wi<wWidth;wi++){for(var wd=0;wd<2;wd++){var wx,wy;if(ww==="top"){wx=wp+wi;wy=wd;}else if(ww==="bottom"){wx=wp+wi;wy=rh-1-wd;}else if(ww==="left"){wy=wp+wi;wx=wd;}else{wy=wp+wi;wx=rw-1-wd;}if(inR(wx,wy,rw,rh)&&grid[wy][wx]===1){var oc2=fatAt(pl,wx,wy);if(oc2){var pc2=CAT[oc2.fid].c;if(pc2==="bed"||pc2==="wardrobe"){wbn++;if(!wBkr)wBkr=oc2;}}}}}
   var winStrip=wWidth*2;
   var windowRatio=winStrip>0?wbn/winStrip:0;
   var soft=1-FACTOR_FLOOR;
-  var privacy=1-soft*pillowRatio;     // linear remap to [FACTOR_FLOOR, 1]
+  var privacy=1-soft*exposureRatio;     // linear remap to [FACTOR_FLOOR, 1]
   var light=1-soft*windowRatio;       // linear remap to [FACTOR_FLOOR, 1]
   var unr=0,te=0,wasteRatio=0;
   if(pl.length>0){for(var iy=0;iy<rh;iy++)for(var ix=0;ix<rw;ix++)if(grid[iy][ix]===0)te++;unr=Math.max(0,te-sw.size);wasteRatio=te>0?unr/te:0;}
   var efficiency=1-wasteRatio;
-  var tot=Math.round(av*privacy*light*efficiency*10)/10;
+  var product=av*privacy*light*efficiency;
+  var tot=Math.round((product+diversity)*10)/10;
   // semantic gate: bedroom isn't a bedroom without a bed (matches env.py)
   var hasBed=beds.length>0;
   if(!hasBed)tot=0;
   var privAmt=Math.round(av*(1-privacy)*10)/10;
   var lightAmt=Math.round(av*privacy*(1-light)*10)/10;
   var wstAmt=Math.round(av*privacy*light*(1-efficiency)*10)/10;
-  var pd="pillow "+pen+"/"+tpn+" ("+(pillowRatio*100).toFixed(0)+"%) \u2192 \u00d7"+privacy.toFixed(2);
+  var pd="pillow "+pen+"/"+tpn+" ("+(exposureRatio*100).toFixed(0)+"%) \u2192 \u00d7"+privacy.toFixed(2);
   var ld="win "+wbn+"/"+winStrip+" ("+(windowRatio*100).toFixed(0)+"%) \u2192 \u00d7"+light.toFixed(2);
   var wd=unr+"/"+te+" ("+(wasteRatio*100).toFixed(0)+"%) \u2192 \u00d7"+efficiency.toFixed(2);
-  return{av:Math.round(av*10)/10,priv:privAmt,lig:lightAmt,wst:wstAmt,tot:tot,aP:aP.join("  "),pd:pd,ld:ld,wd:wd,exp:exp,sw:sw,aZ:aZ,wBkr:wBkr,dcx:dcx,dcy:dcy,fac:fac,privacy:privacy,light:light,efficiency:efficiency,pillowRatio:pillowRatio,windowRatio:windowRatio,wasteRatio:wasteRatio};}
+  return{av:Math.round(av*10)/10,diversity:Math.round(diversity*10)/10,nCats:nCats,priv:privAmt,lig:lightAmt,wst:wstAmt,tot:tot,aP:aP.join("  "),pd:pd,ld:ld,wd:wd,exp:exp,sw:sw,aZ:aZ,wBkr:wBkr,dcx:dcx,dcy:dcy,fac:fac,privacy:privacy,light:light,efficiency:efficiency,exposureRatio:exposureRatio,windowRatio:windowRatio,wasteRatio:wasteRatio};}
 function Thumb(p){var s=1.5;return <svg width={Math.max(p.w*s+2,8)} height={Math.max(p.h*s+2,8)} style={{marginRight:3,flexShrink:0}}><rect x={1} y={1} width={p.w*s} height={p.h*s} fill={p.color} rx={1} opacity={0.7}/></svg>;}
 
 function App(){
@@ -164,6 +222,9 @@ function App(){
   //   3. Per-cat count limit (MAXC: 1 bed, 1 desk, 1 wardrobe, 1 cabinet, 2 nightstand)
   //   4. Footprint can't fall inside any non-bed piece's functional zone
   //   5. Own zone must be valid (partial=True for bed, partial=False for others)
+  //      Nightstand-specific: ori must = bed.ori AND (x,y) must equal one
+  //      of the 2 natural slots adjacent to bed headboard; zone check is
+  //      bypassed (access is via the bed, not via a floor corridor).
   var chkV=useCallback(function(fid,x,y,o){
     var sp=CAT[fid],d=gfp(sp,o);
     // 1. geometric basic
@@ -178,7 +239,41 @@ function App(){
     var ccount=0;
     for(var pi=0;pi<pl.length;pi++) if(CAT[pl[pi].fid].c===sp.c) ccount++;
     if(ccount >= (MAXC[sp.c]||1)) return false;
-    // 4. footprint can't overlap any non-bed piece's zone
+    // 3b. Nightstand mask: 2 slots on bed's LONG SIDES at the head end
+    // (one above/left, one below/right of bed), x/y aligned with the pillow
+    // column/row. ns_ori = bed.ori ^ 1 (drawer faces along bed's long axis
+    // from pillow → foot).
+    if(sp.c==="nightstand"){
+      var bedP=null;
+      for(var bi=0;bi<pl.length;bi++) if(CAT[pl[bi].fid].c==="bed"){bedP=pl[bi];break;}
+      if(!bedP) return false;
+      if(o!==(bedP.ori^1)) return false;
+      var slots;
+      if(bedP.ori===0)      slots=[[bedP.x,bedP.y-d.h],[bedP.x,bedP.y+bedP.fh]];
+      else if(bedP.ori===2){var xx2=bedP.x+bedP.fw-d.w;slots=[[xx2,bedP.y-d.h],[xx2,bedP.y+bedP.fh]];}
+      else if(bedP.ori===1) slots=[[bedP.x-d.w,bedP.y],[bedP.x+bedP.fw,bedP.y]];
+      else{var yy3=bedP.y+bedP.fh-d.h;slots=[[bedP.x-d.w,yy3],[bedP.x+bedP.fw,yy3]];}
+      var matched=false;
+      for(var si=0;si<slots.length;si++) if(slots[si][0]===x&&slots[si][1]===y){matched=true;break;}
+      if(!matched) return false;
+      // NS own-zone check: allow bed cells in zone, but block other furniture.
+      var nsTp={fid:fid,x:x,y:y,fw:d.w,fh:d.h,ori:o};
+      var nsZ=zoneRects(nsTp);
+      for(var nzi=0;nzi<nsZ.length;nzi++){
+        var nz=nsZ[nzi];
+        for(var nzy=nz.y;nzy<nz.y+nz.h;nzy++) for(var nzx=nz.x;nzx<nz.x+nz.w;nzx++){
+          if(!inR(nzx,nzy,rW,rH)) return false;
+          if(grid[nzy][nzx]!==0){
+            var oc=fatAt(pl,nzx,nzy);
+            if(!oc||CAT[oc.fid].c!=="bed") return false;
+          }
+        }
+      }
+      return true;
+    }
+    // 4. footprint can't overlap any non-bed piece's functional zone.
+    // Bed zones are LOOSE by default — but when only 1 bed zone remains
+    // clear, that last zone is auto-locked (lifetime corridor invariant).
     for(var pi2=0;pi2<pl.length;pi2++){
       if(CAT[pl[pi2].fid].c==="bed") continue;
       var zRect=zoneRects(pl[pi2]);
@@ -189,20 +284,36 @@ function App(){
         if(ox<oxe && oy<oye) return false;
       }
     }
+    // 4b. Bed corridor lifetime invariant: if only 1 bed zone is clear,
+    // lock it (no new placement may overlap that zone).
+    var bedsP=[];
+    for(var bj=0;bj<pl.length;bj++) if(CAT[pl[bj].fid].c==="bed") bedsP.push(pl[bj]);
+    if(bedsP.length>0){
+      var bzClear=bedClearZones(bedsP[0],pl,grid,rW,rH);
+      if(bzClear.length===1){
+        var lz=bzClear[0];
+        var bx=Math.max(x,lz.x), by=Math.max(y,lz.y);
+        var bxe=Math.min(x+d.w, lz.x+lz.w), bye=Math.min(y+d.h, lz.y+lz.h);
+        if(bx<bxe && by<bye) return false;
+      }
+    }
     // 5. own zone validity
     var tp={fid:fid,x:x,y:y,fw:d.w,fh:d.h,ori:o};
     var ownZ=zoneRects(tp);
     if(sp.z3){
-      // bed: partial=True, at least one cell in any zone must be in-bounds + empty
-      var anyEmpty=false;
-      for(var zi2=0;zi2<ownZ.length && !anyEmpty;zi2++){
+      // bed: each zone is exactly 8×3 (or 3×8) = 1.2m × 0.45m foot-anchored.
+      // At least ONE zone must be in-bounds AND fully clear of walls/swing.
+      var anyZoneClear=false;
+      for(var zi2=0;zi2<ownZ.length && !anyZoneClear;zi2++){
         var zr2=ownZ[zi2];
-        for(var zy=0;zy<zr2.h && !anyEmpty;zy++) for(var zx=0;zx<zr2.w;zx++){
-          var cx=zr2.x+zx, cy=zr2.y+zy;
-          if(inR(cx,cy,rW,rH) && grid[cy][cx]===0){anyEmpty=true;break;}
+        var clear=true;
+        for(var wy=0;wy<zr2.h && clear;wy++) for(var wx=0;wx<zr2.w && clear;wx++){
+          var cx=zr2.x+wx, cy=zr2.y+wy;
+          if(!inR(cx,cy,rW,rH) || grid[cy][cx]!==0){clear=false;break;}
         }
+        if(clear) anyZoneClear=true;
       }
-      if(!anyEmpty) return false;
+      if(!anyZoneClear) return false;
     }else{
       // non-bed: every zone cell must be in-bounds AND empty
       for(var zi3=0;zi3<ownZ.length;zi3++){
@@ -218,7 +329,13 @@ function App(){
   },[grid,swing,rW,rH,pl]);
   function doPlace(cx,cy){if(sel===null||!chkV(sel,cx,cy,ori))return;var d=gfp(CAT[sel],ori);setPl(function(p){return p.concat([{id:Date.now(),fid:sel,x:cx,y:cy,fw:d.w,fh:d.h,ori:ori}]);});}
   function onMove(e){var r=e.currentTarget.getBoundingClientRect(),gx=Math.floor((e.clientX-r.left-WT)/CELL),gy=Math.floor((e.clientY-r.top-WT)/CELL);if(sel!==null)setHov({x:Math.max(0,Math.min(rW-1,gx)),y:Math.max(0,Math.min(rH-1,gy))});}
-  function onWheel(e){e.preventDefault();setOri(function(o){return(o+(e.deltaY>0?1:3))%4;});}
+  function onWheel(e){
+    e.preventDefault();
+    // Nightstand orientation is forced to bed.ori^1; wheel-rotate is disabled
+    // to avoid users getting stuck on "I can't place NS" UX issues.
+    if(sel!==null && CAT[sel].c==="nightstand") return;
+    setOri(function(o){return(o+(e.deltaY>0?1:3))%4;});
+  }
   var hfp=sel!==null&&hov?gfp(CAT[sel],ori):null,hv=sel!==null&&hov?chkV(sel,hov.x,hov.y,ori):false;
   var rw=useMemo(function(){return calc(pl,dWall,eDP,grid,eWW,eWP,rW,rH,winW);},[pl,eDP,grid,eWW,eWP,rW,rH,winW]);
   // Hover
@@ -260,7 +377,7 @@ function App(){
   return(<div style={{padding:24,display:"flex",justifyContent:"center"}}>
     <div style={{maxWidth:1020}}>
       <h1 style={{fontSize:28,fontWeight:700,fontStyle:"italic",color:"#C03030",margin:"0 0 1px",fontFamily:"Georgia,serif"}}>my little bedroom</h1>
-      <p style={{fontSize:10,color:"#aaa",margin:"0 0 14px"}}>MDP: state = grid · action = place furniture · R = A × privacy × light × efficiency &nbsp;·&nbsp; <span style={{color:"#c44"}}>R = 0 if no bed</span></p>
+      <p style={{fontSize:10,color:"#aaa",margin:"0 0 14px"}}>MDP: state = grid · action = place furniture · R = A × privacy × light × efficiency + diversity &nbsp;·&nbsp; <span style={{color:"#c44"}}>R = 0 if no bed</span></p>
       <div style={{display:"flex",gap:16}}>
         <div>
           <svg width={svgW+WT*2} height={svgH+WT*2} style={{background:"#fff",display:"block"}} onMouseMove={onMove} onMouseLeave={function(){setHov(null);}} onWheel={onWheel}>
@@ -276,7 +393,7 @@ function App(){
             <div className="card-title">Reward</div>
             <div className="card-hint">click each row to visualize</div>
             <div style={{fontFamily:"monospace",fontSize:11}}>
-              {[["avail","Availability","+"+rw.av,rw.aP,false,1],["priv","Privacy","\u00d7"+rw.privacy.toFixed(2),rw.pd,true,rw.privacy],["lig","Light","\u00d7"+rw.light.toFixed(2),rw.ld,true,rw.light],["eff","Efficiency","\u00d7"+rw.efficiency.toFixed(2),rw.wd,true,rw.efficiency]].map(function(r){return <div key={r[0]} onClick={function(){setHlM(hlM===r[0]?null:r[0]);}} style={{display:"flex",alignItems:"center",padding:"5px 6px",marginBottom:2,cursor:"pointer",borderRadius:4,background:hlM===r[0]?LEM+"25":"transparent"}}><span style={{color:"#444",fontWeight:700,minWidth:90,fontSize:12}}>{r[1]}</span><span style={{color:"#aaa",fontSize:9,flex:1,marginLeft:8,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{r[3]}</span><span style={{fontWeight:700,color:r[4]&&r[5]<1?"#c44":"#333",minWidth:50,textAlign:"right",fontSize:13}}>{r[2]}</span></div>;})}
+              {[["avail","Availability","+"+rw.av,rw.aP,false,1],["priv","Privacy","\u00d7"+rw.privacy.toFixed(2),rw.pd,true,rw.privacy],["lig","Light","\u00d7"+rw.light.toFixed(2),rw.ld,true,rw.light],["eff","Efficiency","\u00d7"+rw.efficiency.toFixed(2),rw.wd,true,rw.efficiency],["div","Diversity","+"+rw.diversity,rw.nCats+"/5 categories",false,1]].map(function(r){return <div key={r[0]} onClick={function(){setHlM(hlM===r[0]?null:r[0]);}} style={{display:"flex",alignItems:"center",padding:"5px 6px",marginBottom:2,cursor:"pointer",borderRadius:4,background:hlM===r[0]?LEM+"25":"transparent"}}><span style={{color:"#444",fontWeight:700,minWidth:90,fontSize:12}}>{r[1]}</span><span style={{color:"#aaa",fontSize:9,flex:1,marginLeft:8,overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{r[3]}</span><span style={{fontWeight:700,color:r[4]&&r[5]<1?"#c44":"#333",minWidth:50,textAlign:"right",fontSize:13}}>{r[2]}</span></div>;})}
               <div style={{display:"flex",alignItems:"center",padding:"5px 6px",borderTop:"1px solid #eee",marginTop:2}}><span style={{fontWeight:700,color:"#333",fontSize:13}}>Total</span><span style={{marginLeft:"auto",fontSize:22,fontWeight:700,fontFamily:"Georgia,serif"}}>{rw.tot}</span></div>
             </div>
           </div>
@@ -286,7 +403,7 @@ function App(){
             <div className="card-title">Environment</div>
             <div className="card-hint">room size, door & window</div>
             <div style={{fontSize:11,marginBottom:4}}>
-              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}><span style={{color:"#555",fontWeight:600,minWidth:36}}>Room</span><input type="range" min={14} max={26} value={rW} onChange={function(e){setRW(+e.target.value);setPl([]);}} style={{width:55}}/><span style={{color:"#888",fontSize:10}}>{rW}</span><input type="range" min={18} max={22} value={rH} onChange={function(e){setRH(+e.target.value);setPl([]);}} style={{width:35}}/><span style={{color:"#888",fontSize:10}}>{rH}</span></div>
+              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}><span style={{color:"#555",fontWeight:600,minWidth:36}}>Room</span><input type="range" min={16} max={26} value={rW} onChange={function(e){setRW(+e.target.value);setPl([]);}} style={{width:55}}/><span style={{color:"#888",fontSize:10}}>{rW}</span><input type="range" min={18} max={22} value={rH} onChange={function(e){setRH(+e.target.value);setPl([]);}} style={{width:35}}/><span style={{color:"#888",fontSize:10}}>{rH}</span></div>
               <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:4}}><span style={{color:"#555",fontWeight:600,minWidth:36}}>Door</span><input type="range" min={0} max={maxDP} value={eDP} onChange={function(e){setDPos(+e.target.value);setPl([]);}} style={{width:100}}/></div>
               <div style={{display:"flex",alignItems:"center",gap:4}}><span style={{color:"#555",fontWeight:600,minWidth:36}}>Win</span>{vww.map(function(w){return <button key={w} onClick={function(){setWWall(w);}} className={"btn btn-wall"+(eWW===w?" active":"")}>{w}</button>;})}<span style={{color:"#bbb",fontSize:9,marginLeft:4}}>{winW+" cells"}</span></div>
             </div>
@@ -309,7 +426,7 @@ function App(){
               if(catCount>=(MAXC[cat]||1)) catBlocked=true;
               return <div key={cat} style={{marginBottom:8,opacity:catBlocked?0.35:1}}>
                 <div className="cat-label">{cat.toUpperCase()+" \u00b7 "+CATDESC[cat]+(catBlocked?" (mask blocked)":"")}</div>
-                <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{items.map(function(it){var d=gfp(it.sp,ori),on=sel===it.idx;return <button key={it.idx} onClick={function(){if(!catBlocked) setSel(on?null:it.idx);}} className="btn" style={{padding:"4px 6px",borderRadius:4,background:on?c+"20":"transparent",color:on?"#222":"#888",fontSize:11,fontWeight:on?600:400,display:"flex",alignItems:"center",gap:3,cursor:catBlocked?"not-allowed":"pointer"}}><Thumb w={it.sp.w} h={it.sp.h} color={c}/><div><div>{it.sp.n}</div><div style={{fontSize:8,color:"#bbb"}}>{(d.w*GRID).toFixed(2)+"\u00d7"+(d.h*GRID).toFixed(2)}</div></div></button>;})}</div></div>;})}
+                <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>{items.map(function(it){var d=gfp(it.sp,ori),on=sel===it.idx;return <button key={it.idx} onClick={function(){if(catBlocked) return; if(on){setSel(null); return;} setSel(it.idx); if(it.sp.c==="nightstand"){for(var bk=0;bk<pl.length;bk++) if(CAT[pl[bk].fid].c==="bed"){setOri(pl[bk].ori^1);break;}}}} className="btn" style={{padding:"4px 6px",borderRadius:4,background:on?c+"20":"transparent",color:on?"#222":"#888",fontSize:11,fontWeight:on?600:400,display:"flex",alignItems:"center",gap:3,cursor:catBlocked?"not-allowed":"pointer"}}><Thumb w={it.sp.w} h={it.sp.h} color={c}/><div><div>{it.sp.n}</div><div style={{fontSize:8,color:"#bbb"}}>{(d.w*GRID).toFixed(2)+"\u00d7"+(d.h*GRID).toFixed(2)}</div></div></button>;})}</div></div>;})}
           </div>
           {pl.length>0&&<div className="card"><div className="card-title">Placed</div>{pl.map(function(p){return <div key={p.id} style={{fontSize:10,color:"#777",padding:"2px 0",display:"flex",alignItems:"center",gap:5}}><div style={{width:5,height:5,borderRadius:1.5,background:CC[CAT[p.fid].c]}}/><span>{CAT[p.fid].n}</span><span style={{color:"#ccc",fontSize:8}}>{"("+p.x+","+p.y+") "+["\u2191","\u2192","\u2193","\u2190"][p.ori]}</span></div>;})}</div>}
         </div>

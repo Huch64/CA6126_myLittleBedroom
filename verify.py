@@ -50,14 +50,15 @@ CASES: list[Case] = [
     Case(
         name="bed + paired nightstand",
         description=(
-            "Bed 1.2 horizontal head-LEFT at (3,1); Nightstand A above the "
-            "headboard at (3,-2)? No — must stay in room. Place NS at (3,9) "
-            "(below bed, aligned with headboard column x=3)."
+            "Bed 1.2 horizontal head-LEFT at (3,1); Nightstand A (3×4 after "
+            "ns_ori = bed.ori^1 = 1) on the bed's TOP long side at the head "
+            "end, x aligned with pillow column: NS at (3, -3)? No, out of "
+            "bounds — place it BELOW bed: NS at (3, 9)."
         ),
         room_w=20, room_h=20, door_pos=7, win_wall="top",
         placements=[
-            (1,  3, 1, 0),   # Bed 1.2  (14×8) head-left
-            (16, 3, 9, 0),   # Nightstand A (4×3) right below headboard
+            (1,  3, 1, 0),   # Bed 1.2 (14×8) head-left at (3,1)
+            (16, 3, 9, 1),   # Nightstand A (3×4) below bed on long side at head end
         ],
     ),
     Case(
@@ -68,8 +69,8 @@ CASES: list[Case] = [
         ),
         room_w=20, room_h=20, door_pos=7, win_wall="top",
         placements=[
+            (1, 3, 5, 0),    # Bed 1.2 elsewhere, head-left (must place bed first)
             (8, 6, 0, 0),    # Wardrobe M (8×4) covering window strip
-            (1, 3, 5, 0),    # Bed 1.2 elsewhere, head-left
         ],
     ),
     Case(

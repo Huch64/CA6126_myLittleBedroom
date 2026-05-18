@@ -17,13 +17,15 @@
 
 ## 当前版本核心
 
-**Reward**：`R = A × privacy × light × efficiency`
+**Reward**：`R = Availability × privacy × light × efficiency + diversity`
 
-- **硬约束放在 action mask**：必须有床、step 0 强制放床、不越界、功能区合理、DONE 在床放过后才解锁
+- **硬约束放在 action mask**：必须有床、step 0 强制放床、不越界、功能区合理、床头柜强制贴床头、DONE 在床放过后才解锁
 - **软偏好放在 reward**（连续梯度）：
-  - `privacy` = `1 − 0.7 × pillow_ratio` ∈ [0.3, 1]，枕头中心偏离门口的角度
+  - `Availability` = `Σ area_cells × CELL_REWARD`，按面积线性给分（床自然占大头）
+  - `privacy` = `1 − 0.7 × exposure_ratio` ∈ [0.3, 1]，**床被门看到的加权比例**（枕头 cells 权重 10，床身 1，衣柜可挡视线）
   - `light` = `1 − 0.7 × window_ratio` ∈ [0.3, 1]，窗户被高家具挡的比例
   - `efficiency` = `1 − waste_ratio` ∈ [0, 1]，**不设 floor**，强化空间利用激励
+  - `diversity` = `+1 per distinct category` (max +5)，**加在乘积之外**，奖励放齐 5 类家具（床/桌/衣柜/柜子/床头柜），抵消单纯按面积评分对床的偏爱
 
 **网络**：Factored output heads（fid/x/y/ori/done 分头预测，合成 41185 联合 logit + mask + softmax）；MLP backbone 128-128；LR linear decay。
 
@@ -144,21 +146,19 @@ if CATALOG[p.fid].cat == "bed":
 
 后果：其他家具（desk / wardrobe / cabinet）**可以放进床的 zone 里**，理论上可能出现"衣柜挡在床前"这种不合理布局。当前 pilot 实测影响很小（agent 学到了合理布局），但严格说是个设计漏洞。
 
-**2. 床自己的合法性条件过于宽松**
+**2. ~~床自己的合法性条件过于宽松~~ ✓ 已修复**
 
-```python
-# 当前: partial=True 意思是 3 个 zone 加起来 ≥ 1 个 cell 可用即可
-# 更严的版本会要求"至少一个 zone 完整可用"
-```
+之前规则是"3 个 zone 加起来 ≥ 1 个 cell 可用"——会让 agent 学到"床三面顶墙"。
 
-意味着可能允许"床三面顶墙、只剩 1 格空地"这种极端配置。pilot 没看到明显问题，但放任 RL 学贴墙时可能撞到这个。
+现在规则是"**至少一个完整 zone 可用**"（3 个 zone 之一必须全在房间内 + 全部空地）。
+经过 50-room sample 测试：最小 16×18 房间仍有合法床位。
 
 **3. 部分超参是"魔法数字"**
 
 - `FACTOR_FLOOR = 0.3`（privacy/light 的下限）
 - `0.7`（线性 remap 的系数，即 1 − FACTOR_FLOOR）
-- `D_PAIR = 4`（nightstand 配对距离衰减）
-- `NIGHTSTAND_PAIR_BONUS = 1.0`
+- `DIVERSITY_BONUS_PER_CAT = 1.0`（每类家具的 diversity 分数）
+- `CELL_REWARD = 0.05`（每格家具的 availability 单价）
 
 都没系统调过，跑通就用了。
 

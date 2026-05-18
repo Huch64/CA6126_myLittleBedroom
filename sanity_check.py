@@ -31,7 +31,7 @@ from env import (
 def smoke_shapes() -> None:
     env = MyLittleBedroom(seed=0)
     obs, info = env.reset(seed=0)
-    assert obs.shape == (3, GH, GW), obs.shape
+    assert obs.shape == (3 * GH * GW + 5,), obs.shape
     assert obs.dtype == np.int8, obs.dtype
     mask = env.action_masks()
     assert mask.shape == (N_ACTIONS,), mask.shape

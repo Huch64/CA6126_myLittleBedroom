@@ -599,7 +599,7 @@ def _draw_reward_details(ax, breakdown):
     eff     = breakdown.get("efficiency", 1.0)
     n_pil   = breakdown.get("n_exposed_pillow", 0)
     tot_pil = breakdown.get("total_pillow_cells", 0)
-    pil_r   = breakdown.get("pillow_ratio", 0.0)
+    pil_r   = breakdown.get("exposure_ratio", 0.0)
     n_win   = breakdown.get("n_window_blocked", 0)
     win_strip = breakdown.get("window_strip_cells", 0)
     win_r   = breakdown.get("window_ratio", 0.0)
@@ -636,7 +636,7 @@ def _draw_reward_details(ax, breakdown):
 def _draw_totals(ax, breakdown):
     """Right bottom: multiplicative reward breakdown + big TOTAL.
 
-    R = availability × privacy × light × efficiency
+    R = availability × privacy × light × efficiency + diversity
         (everything at FIXED y positions for visual stability across frames)
     """
     if breakdown is None:
@@ -650,14 +650,17 @@ def _draw_totals(ax, breakdown):
     privacy = breakdown.get("privacy", 1.0)
     light   = breakdown.get("light",   1.0)
     eff     = breakdown.get("efficiency", 1.0)
+    div     = breakdown.get("diversity", 0.0)
+    n_cats  = breakdown.get("n_categories", 0)
 
     rows = [
-        ("Availability", f"+{A}",            "#222"),
-        ("× privacy",    f"× {privacy:.2f}", "#c44" if privacy < 1.0 else "#666"),
-        ("× light",      f"× {light:.2f}",   "#c44" if light   < 1.0 else "#666"),
-        ("× efficiency", f"× {eff:.2f}",     "#c44" if eff     < 1.0 else "#666"),
+        ("Availability", f"+{A}",                     "#222"),
+        ("× privacy",    f"× {privacy:.2f}",          "#c44" if privacy < 1.0 else "#666"),
+        ("× light",      f"× {light:.2f}",            "#c44" if light   < 1.0 else "#666"),
+        ("× efficiency", f"× {eff:.2f}",              "#c44" if eff     < 1.0 else "#666"),
+        (f"+ diversity ({n_cats}/5)", f"+ {div:.1f}", "#2a9" if div > 0 else "#666"),
     ]
-    y_positions = [0.84, 0.72, 0.60, 0.48]
+    y_positions = [0.86, 0.76, 0.66, 0.56, 0.46]
     for (k, v, c), y in zip(rows, y_positions):
         ax.text(0.02, y, k, fontsize=SZ_BODY, color="#333",
                 va="center", weight="bold", family=MONO)
