@@ -113,6 +113,23 @@ pkill -f "train.py.*<run_name>"
 rm -rf runs/<run_name>
 ```
 
+**从 checkpoint 恢复**（万一中途崩了）：
+
+```bash
+# 看现有 checkpoint
+ls runs/<run_name>/checkpoints/
+
+# 用某个 checkpoint 继续训练（custom 脚本，参考 SB3 API）
+python -c "
+from sb3_contrib import MaskablePPO
+from train import FactoredMaskablePolicy   # 必须加载自定义 policy
+model = MaskablePPO.load('runs/<run_name>/checkpoints/model_300000_steps.zip')
+# ... 创建 env, 继续 learn
+"
+```
+
+默认每 50K 步存一份 (`--checkpoint-freq` 调整)。设 `--checkpoint-freq 0` 关掉。
+
 ---
 
 ## 已知限制（写报告时可以提，也是潜在改进方向）

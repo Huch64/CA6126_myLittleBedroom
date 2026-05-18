@@ -43,7 +43,7 @@ from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
 from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
 from sb3_contrib.common.wrappers import ActionMasker
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
@@ -298,6 +298,9 @@ def main():
     p.add_argument("--eval-freq", type=int, default=10_000,
                    help="run eval every N total env steps (sum across n_envs)")
     p.add_argument("--eval-eps", type=int, default=20)
+    p.add_argument("--checkpoint-freq", type=int, default=50_000,
+                   help="save a checkpoint every N total env steps "
+                        "(0 = disabled). Files saved as model_<step>_steps.zip")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--max-steps", type=int, default=8)
     args = p.parse_args()
@@ -370,6 +373,17 @@ def main():
     # ── callbacks ────────────────────────────────────────
     ep_logger = EpisodeBreakdownLogger(run_dir / "episodes.csv")
     live_cb = LiveProgressCallback(window=500, every=500)
+    # Periodic checkpoint snapshot (every checkpoint_freq env steps).
+    # Useful for crash recovery and analyzing agent at different stages.
+    callbacks = [ep_logger, live_cb]
+    if args.checkpoint_freq > 0:
+        ckpt_cb = CheckpointCallback(
+            save_freq=max(args.checkpoint_freq // args.n_envs, 1),  # per-env counter
+            save_path=str(run_dir / "checkpoints"),
+            name_prefix="model",
+            verbose=0,
+        )
+        callbacks.append(ckpt_cb)
     eval_cb = MaskableEvalCallback(
         eval_env,
         best_model_save_path=str(run_dir / "best"),
@@ -388,14 +402,19 @@ def main():
     print(f"  ent_coef   : {args.ent_coef}")
     print(f"  bonus      : {args.placement_bonus}  (per-placement dense reward)")
     print(f"  eval every : {args.eval_freq:,} steps  ({args.eval_eps} eps)")
+    if args.checkpoint_freq > 0:
+        print(f"  ckpt every : {args.checkpoint_freq:,} steps  → runs/{run_name}/checkpoints/")
+    else:
+        print(f"  ckpt every : disabled")
     print(f"  logs       : {run_dir}/")
     print(f"  view live  : tensorboard --logdir runs/\n")
 
     t0 = time.time()
     try:
+        callbacks.append(eval_cb)
         model.learn(
             total_timesteps=args.timesteps,
-            callback=[ep_logger, live_cb, eval_cb],
+            callback=callbacks,
             progress_bar=True,
         )
     except KeyboardInterrupt:
