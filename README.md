@@ -2,7 +2,8 @@
 
 > A MaskablePPO agent learns to furnish a randomized bedroom.
 > Reward: `R = A × privacy × light × efficiency`
-> &nbsp;&nbsp;each factor a `1 − ratio` discount in [0, 1] — see [spec](my_little_bedroom_spec.md))
+> &nbsp;&nbsp;privacy / light: linear remap to [0.3, 1]; efficiency: full [0, 1] for strong wall-hugging signal — see [spec](my_little_bedroom_spec.md)
+> &nbsp;&nbsp;Semantic gate: `R = 0` if no bed (bedroom must have a bed).
 
 Full MDP spec: [`my_little_bedroom_spec.md`](my_little_bedroom_spec.md)
 Interactive reward reference (open in a browser): [`my_little_bedroom.html`](my_little_bedroom.html)

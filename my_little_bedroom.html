@@ -21,11 +21,15 @@ var useState=React.useState,useMemo=React.useMemo,useCallback=React.useCallback;
 var GRID=0.15,GW=26,GH=22,CELL=18,DW=6,WW=12,WT=CELL,WCOEFF=0.2;
 // Reward v3 (multiplicative, ratio-based) — matches env.py
 // R = A × privacy × light × efficiency
-//   privacy    = 1 − pillow_ratio    (door can't peek at pillow)
-//   light      = 1 − window_ratio    (window not blocked)
-//   efficiency = 1 − waste_ratio     (room walkable)
-var AVAIL_FACTOR={bed:0.32,desk:0.43,wardrobe:0.33,cabinet:0.37,nightstand:0.29};
+//   per-piece value = w × h × CELL_REWARD   (linear in area, single knob)
+//   privacy    = max(FLOOR, 1 − pillow_ratio)    (door can't peek at pillow)
+//   light      = max(FLOOR, 1 − window_ratio)    (window not blocked)
+//   efficiency = max(FLOOR, 1 − waste_ratio)     (room walkable)
+// Uniform floor keeps every factor's gradient alive.
+var CELL_REWARD=0.05;
 var NS_PAIR_BONUS=1.0;
+var D_PAIR=4;
+var FACTOR_FLOOR=0.3;
 var GRAY="#999",LEM="#FFE500",WALLC="#C8C4BE";
 var CC={bed:"#45D468",desk:"#30D4A0",wardrobe:"#30A8D4",cabinet:"#5050D4",nightstand:"#9530D4"};
 var MAXC={bed:1,desk:1,wardrobe:1,cabinet:1,nightstand:2};
@@ -71,30 +75,65 @@ function flood(grid,dw,dp,rw,rh){var pass=[];for(var y=0;y<rh;y++){pass[y]=[];fo
   var dirs=[[-1,0],[1,0],[0,-1],[0,1]];while(q.length){var cur=q.shift();for(var d=0;d<4;d++){var nx2=cur[0]+dirs[d][0],ny2=cur[1]+dirs[d][1],nk=nx2+","+ny2;if(inR(nx2,ny2,rw,rh)&&pass[ny2]&&pass[ny2][nx2]&&!cen.has(nk)){cen.add(nk);q.push([nx2,ny2]);}}}
   var sw=new Set();cen.forEach(function(k){var p=k.split(",");var cx=+p[0],cy=+p[1];for(var ey=-1;ey<=1;ey++)for(var ex=-1;ex<=1;ex++){var x2=cx+ex,y2=cy+ey;if(inR(x2,y2,rw,rh)&&grid[y2]&&grid[y2][x2]===0)sw.add(x2+","+y2);}});return sw;}
 function fatAt(pl,x,y){for(var i=0;i<pl.length;i++){var p=pl[i];if(x>=p.x&&x<p.x+p.fw&&y>=p.y&&y<p.y+p.fh)return p;}return null;}
-function calc(pl,dw,dp,grid,ww,wp,rw,rh,wWidth){var sw=pl.length>0?flood(grid,dw,dp,rw,rh):new Set();var i,cc={};for(i=0;i<pl.length;i++){var c2=CAT[pl[i].fid].c;cc[c2]=(cc[c2]||0)+1;}
-  var beds=[],nss=[];for(i=0;i<pl.length;i++){var ct=CAT[pl[i].fid].c;if(ct==="bed")beds.push(pl[i]);if(ct==="nightstand")nss.push(pl[i]);}
-  var pNS=new Set();for(var ni=0;ni<nss.length;ni++){var ns=nss[ni];for(var bi=0;bi<beds.length;bi++){var bd=beds[bi],o=bd.ori,paired=false;if(o===0||o===2){var abv=ns.y+ns.fh===bd.y&&ns.x<bd.x+bd.fw&&ns.x+ns.fw>bd.x;var blw=ns.y===bd.y+bd.fh&&ns.x<bd.x+bd.fw&&ns.x+ns.fw>bd.x;var hbX=o===0?bd.x:bd.x+bd.fw-1;paired=(abv||blw)&&ns.x<=hbX&&ns.x+ns.fw>hbX;}else{var lft=ns.x+ns.fw===bd.x&&ns.y<bd.y+bd.fh&&ns.y+ns.fh>bd.y;var rgt=ns.x===bd.x+bd.fw&&ns.y<bd.y+bd.fh&&ns.y+ns.fh>bd.y;var hbY=o===1?bd.y:bd.y+bd.fh-1;paired=(lft||rgt)&&ns.y<=hbY&&ns.y+ns.fh>hbY;}if(paired){pNS.add(ns.id);break;}}}
-  var av=0,aP=[],aZ=[];for(i=0;i<pl.length;i++){var p=pl[i],sp=CAT[p.fid];if(cc[sp.c]>(MAXC[sp.c]||1)){aP.push(sp.n+":0");continue;}var con=false;for(var dy=-1;dy<=p.fh&&!con;dy++)for(var dx=-1;dx<=p.fw&&!con;dx++){if(dy>=0&&dy<p.fh&&dx>=0&&dx<p.fw)continue;if(sw.has((p.x+dx)+","+(p.y+dy)))con=true;}if(!con&&pl.length>0){aP.push(sp.n+":0");continue;}var m=1,b=0;if(sp.c==="nightstand"){if(pNS.has(p.id))b=1;else m=0.5;}var ok=true,zR=zoneRects(p),aCat=sp.c==="bed"?["nightstand"]:[],part=!!sp.z3,ag=false,ab=false;for(var ri=0;ri<zR.length;ri++){var zr=zR[ri];for(var zy=0;zy<zr.h;zy++)for(var zx=0;zx<zr.w;zx++){var cx=zr.x+zx,cy=zr.y+zy;if(!inR(cx,cy,rw,rh)){ab=true;continue;}if(grid[cy][cx]!==0){var oc=fatAt(pl,cx,cy);if(oc&&aCat.indexOf(CAT[oc.fid].c)>=0){ag=true;continue;}ab=true;}else ag=true;}}if(part)ok=ag;else ok=!ab;var val=ok?(Math.sqrt(sp.w*sp.h)*AVAIL_FACTOR[sp.c]*m+b):0;av+=val;if(ok){var zc=zoneCells(p);for(var ai=0;ai<zc.length;ai++)aZ.push(zc[ai]);}aP.push(sp.n+":"+(Math.round(val*10)/10));}
+function calc(pl,dw,dp,grid,ww,wp,rw,rh,wWidth){var sw=pl.length>0?flood(grid,dw,dp,rw,rh):new Set();var i;
+  var beds=[];for(i=0;i<pl.length;i++){if(CAT[pl[i].fid].c==="bed")beds.push(pl[i]);}
+  // Per-item value: base = area × CELL_REWARD; nightstand adds distance-decay bonus (capped at NS_PAIR_BONUS, 0 at d≥D_PAIR).
+  // Validity (zone clear, no overlap) is enforced by action mask in env.py; HTML mirrors by always scoring placed pieces.
+  var av=0,aP=[],aZ=[];
+  for(i=0;i<pl.length;i++){
+    var p=pl[i],sp=CAT[p.fid];
+    var val=sp.w*sp.h*CELL_REWARD;
+    if(sp.c==="nightstand"&&beds.length>0){
+      var dMin=Infinity;
+      for(var bi=0;bi<beds.length;bi++){
+        var bd=beds[bi],pc=pillowCells(bd);
+        for(var pi2=0;pi2<pc.length;pi2++){
+          var dd=Math.abs(p.x+p.fw/2-(pc[pi2][0]+0.5))+Math.abs(p.y+p.fh/2-(pc[pi2][1]+0.5));
+          if(dd<dMin)dMin=dd;
+        }
+      }
+      val+=NS_PAIR_BONUS*Math.max(0,1-dMin/D_PAIR);
+    }
+    av+=val;
+    var zc=zoneCells(p);for(var ai=0;ai<zc.length;ai++)aZ.push(zc[ai]);
+    aP.push(sp.n+":"+(Math.round(val*10)/10));
+  }
   var dcx=0,dcy=0,fac=0;if(dw==="top"){dcx=dp+DW/2;dcy=0.5;fac=Math.PI/2;}else if(dw==="bottom"){dcx=dp+DW/2;dcy=rh-0.5;fac=-Math.PI/2;}else if(dw==="left"){dcx=0.5;dcy=dp+DW/2;fac=0;}else{dcx=rw-0.5;dcy=dp+DW/2;fac=Math.PI;}
-  // v3 reward \u2014 pillow / window as RATIOS, combined multiplicatively
-  var exp=[],tbc=0,pen=0,tpn=0;
+  // privacy v4 (simplified) \u2014 single angle from door to pillow centroid.
+  // PPT-friendly: no per-cell loop, no Bresenham wardrobe blocking, no
+  // distance term. Wardrobes affect reward only via light/efficiency now.
+  var exp=[],tbc=0,pen=0,tpn=0,pillowRatio=0;
   if(beds.length>0){
     var pSet=new Set();
     for(i=0;i<beds.length;i++){var pc=pillowCells(beds[i]);for(var pi=0;pi<pc.length;pi++)pSet.add(pc[pi][0]+","+pc[pi][1]);}
     tpn=pSet.size;
-    for(i=0;i<beds.length;i++){var bb=beds[i];for(var by=0;by<bb.fh;by++)for(var bx=0;bx<bb.fw;bx++){tbc++;var bxc=bb.x+bx+0.5,byc=bb.y+by+0.5,ang=Math.atan2(byc-dcy,bxc-dcx),df=ang-fac;while(df>Math.PI)df-=2*Math.PI;while(df<-Math.PI)df+=2*Math.PI;if(Math.abs(df)<Math.PI/4){var blk=false,lx=Math.round(dcx),ly=Math.round(dcy),tx=bb.x+bx,ty=bb.y+by,adx=Math.abs(tx-lx),ady=Math.abs(ty-ly),sx=lx<tx?1:-1,sy=ly<ty?1:-1,err=adx-ady,cx2=lx,cy2=ly,st=0;while(st<100){st++;if(cx2===tx&&cy2===ty)break;var e2=2*err;if(e2>-ady){err-=ady;cx2+=sx;}if(e2<adx){err+=adx;cy2+=sy;}if(cx2===tx&&cy2===ty)break;if(inR(cx2,cy2,rw,rh)&&grid[cy2][cx2]!==0){var blkF=fatAt(pl,cx2,cy2);if(blkF&&CAT[blkF.fid].c==="wardrobe"){blk=true;break;}}}if(!blk){exp.push([bb.x+bx,bb.y+by]);if(pSet.has((bb.x+bx)+","+(bb.y+by)))pen++;}}}}
+    // pillow centroid
+    var sumX=0,sumY=0,n=0;
+    pSet.forEach(function(k){var p=k.split(","); sumX+=(+p[0])+0.5; sumY+=(+p[1])+0.5; n++;});
+    var pcx=sumX/n, pcy=sumY/n;
+    var coneHalf=Math.PI/4;
+    var angP=Math.atan2(pcy-dcy,pcx-dcx);
+    var dfP=angP-fac;
+    while(dfP>Math.PI)dfP-=2*Math.PI;
+    while(dfP<-Math.PI)dfP+=2*Math.PI;
+    pillowRatio=Math.max(0,1-Math.abs(dfP)/coneHalf);
+    // for HUD: still collect "exposed" cells for visualization
+    for(i=0;i<beds.length;i++){var bb=beds[i];for(var by=0;by<bb.fh;by++)for(var bx=0;bx<bb.fw;bx++){tbc++;var bxc=bb.x+bx+0.5,byc=bb.y+by+0.5,a=Math.atan2(byc-dcy,bxc-dcx),df=a-fac;while(df>Math.PI)df-=2*Math.PI;while(df<-Math.PI)df+=2*Math.PI;if(Math.abs(df)<coneHalf){exp.push([bb.x+bx,bb.y+by]);if(pSet.has((bb.x+bx)+","+(bb.y+by)))pen++;}}}
   }
-  var pillowRatio=tpn>0?pen/tpn:0;
   var wbn=0,wBkr=null;
   for(var wi=0;wi<wWidth;wi++){for(var wd=0;wd<2;wd++){var wx,wy;if(ww==="top"){wx=wp+wi;wy=wd;}else if(ww==="bottom"){wx=wp+wi;wy=rh-1-wd;}else if(ww==="left"){wy=wp+wi;wx=wd;}else{wy=wp+wi;wx=rw-1-wd;}if(inR(wx,wy,rw,rh)&&grid[wy][wx]===1){var oc2=fatAt(pl,wx,wy);if(oc2){var pc2=CAT[oc2.fid].c;if(pc2==="bed"||pc2==="wardrobe"){wbn++;if(!wBkr)wBkr=oc2;}}}}}
   var winStrip=wWidth*2;
   var windowRatio=winStrip>0?wbn/winStrip:0;
-  var privacy=1-pillowRatio;
-  var light=1-windowRatio;
+  var soft=1-FACTOR_FLOOR;
+  var privacy=1-soft*pillowRatio;     // linear remap to [FACTOR_FLOOR, 1]
+  var light=1-soft*windowRatio;       // linear remap to [FACTOR_FLOOR, 1]
   var unr=0,te=0,wasteRatio=0;
   if(pl.length>0){for(var iy=0;iy<rh;iy++)for(var ix=0;ix<rw;ix++)if(grid[iy][ix]===0)te++;unr=Math.max(0,te-sw.size);wasteRatio=te>0?unr/te:0;}
   var efficiency=1-wasteRatio;
   var tot=Math.round(av*privacy*light*efficiency*10)/10;
+  // semantic gate: bedroom isn't a bedroom without a bed (matches env.py)
+  var hasBed=beds.length>0;
+  if(!hasBed)tot=0;
   var privAmt=Math.round(av*(1-privacy)*10)/10;
   var lightAmt=Math.round(av*privacy*(1-light)*10)/10;
   var wstAmt=Math.round(av*privacy*light*(1-efficiency)*10)/10;
@@ -164,7 +203,7 @@ function App(){
   return(<div style={{padding:24,display:"flex",justifyContent:"center"}}>
     <div style={{maxWidth:1020}}>
       <h1 style={{fontSize:28,fontWeight:700,fontStyle:"italic",color:"#C03030",margin:"0 0 1px",fontFamily:"Georgia,serif"}}>my little bedroom</h1>
-      <p style={{fontSize:10,color:"#aaa",margin:"0 0 14px"}}>MDP: state = grid · action = place furniture · R = A × privacy × light × efficiency</p>
+      <p style={{fontSize:10,color:"#aaa",margin:"0 0 14px"}}>MDP: state = grid · action = place furniture · R = A × privacy × light × efficiency &nbsp;·&nbsp; <span style={{color:"#c44"}}>R = 0 if no bed</span></p>
       <div style={{display:"flex",gap:16}}>
         <div>
           <svg width={svgW+WT*2} height={svgH+WT*2} style={{background:"#fff",display:"block"}} onMouseMove={onMove} onMouseLeave={function(){setHov(null);}} onWheel={onWheel}>

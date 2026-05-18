@@ -36,7 +36,8 @@ def smoke_shapes() -> None:
     mask = env.action_masks()
     assert mask.shape == (N_ACTIONS,), mask.shape
     assert mask.dtype == np.bool_
-    assert mask[ACTION_DONE], "DONE must always be available"
+    # DONE is mask-blocked until a bed is placed (bedroom-required gate).
+    assert not mask[ACTION_DONE], "DONE should be blocked before any bed is placed"
     print(f"[ok] shapes: obs={obs.shape} mask={mask.shape} "
           f"valid_actions={int(mask.sum())} info={info}")
 

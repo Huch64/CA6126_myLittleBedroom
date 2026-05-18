@@ -8,9 +8,13 @@ sanity-checked side-by-side with the interactive preview.
 MDP recap (see my_little_bedroom_spec.md):
   - State:  multi-channel 26x22 grid (occupancy / door / window).
   - Action: Discrete(41185) = (fid, x, y, ori) flattened + DONE.
+            DONE is mask-blocked until a bed has been placed.
+            Step 0 is mask-restricted to bed actions only (bed-first).
   - Reward: 0 every step except final, where
         R = Availability × privacy × light × efficiency
     with each factor a (1 − ratio) discount in [0, 1].
+    Semantic gate: if no bed at episode end, R = 0
+    (a bedroom isn't a bedroom without a bed).
 
 Public API:
   env = MyLittleBedroom(seed=0)
@@ -44,34 +48,44 @@ N_ORI = 4
 #
 # R = Availability × privacy × light × efficiency
 #
-#   • Availability  = Σ (√area × cat_factor)  — sub-linear: big furniture
-#                     has diminishing returns.
-#   • privacy       = 1 − pillow_ratio   (door can't peek at pillow)
-#                         pillow_ratio = exposed pillow cells / total pillow
-#   • light         = 1 − window_ratio   (window not blocked)
+#   • Availability  = Σ (area_cells × CELL_REWARD)
+#                       — linear in area, single knob, no per-category factor.
+#                       Big furniture (bed) dominates naturally because it
+#                       occupies the most space.
+#   • privacy       = 1 − (1 − FACTOR_FLOOR) × pillow_ratio
+#                         pillow_ratio = angle_dev_to_pillow / (π/4)
+#                         linear remap to [FACTOR_FLOOR, 1] — no flat zone
+#   • light         = 1 − (1 − FACTOR_FLOOR) × window_ratio
 #                         window_ratio = blocked window cells / window strip
-#   • efficiency    = 1 − waste_ratio    (room is walkable)
+#                         linear remap to [FACTOR_FLOOR, 1] — no flat zone
+#   • efficiency    = 1 − waste_ratio                         (full [0, 1])
 #                         waste_ratio  = unreachable / empty cells
+#                         NO floor — strongest signal for wall-hugging
 #
-# Each penalty is a fraction in [0, 1] of "the relevant resource", so each
-# (1 − ratio) is an independent discount factor in [0, 1]. No weights, no τ,
-# no clamping — every term has one transparent physical meaning. Properties:
+# Properties:
 #   • Scale-invariant across room sizes (ratios cancel cell count).
-#   • R = 0 iff A = 0 (DONE-immediate) or some ratio = 1; any sensible
-#     placement makes R > 0 — eliminates the DONE-trap local optimum.
+#   • privacy / light always have gradient (smooth linear in their range).
+#   • efficiency can range fully [0, 1] — agent strongly incentivized to
+#     eliminate dead space (push furniture against walls).
+#   • Bed-required semantic gate: if no bed placed at episode end,
+#     R is overridden to 0 in _reward().
 
-AVAIL_FACTOR = {                    # availability = √(area_cells) × factor
-    "bed":        0.32,             # bed 1.8: √168 × 0.32 ≈ 4.15
-    "desk":       0.43,             # desk XL: √48  × 0.43 ≈ 2.98
-    "wardrobe":   0.33,             # wardrobe XXL: √56 × 0.33 ≈ 2.47
-    "cabinet":    0.37,             # cabinet XL: √30 × 0.37 ≈ 2.03
-    "nightstand": 0.29,             # nightstand A: √12 × 0.29 ≈ 1.00
-}
-NIGHTSTAND_PAIR_BONUS = 1.0         # absolute bonus when paired with headboard
+CELL_REWARD = 0.05                  # reward per cell of furniture occupancy
+NIGHTSTAND_PAIR_BONUS = 1.0         # max bonus when nightstand is adjacent to headboard
+D_PAIR = 4                          # nightstand bonus decays linearly to 0 over D_PAIR cells
+FACTOR_FLOOR = 0.3                  # soft-factor minimum (privacy / light range
+                                    # linearly from FACTOR_FLOOR to 1.0 — no
+                                    # flat zone, gradient always alive).
+                                    # Efficiency has no floor (full [0, 1]).
+                                    # privacy/light/efficiency ∈ [FACTOR_FLOOR, 1].
+                                    # Keeps every factor's gradient alive even
+                                    # in worst-case placements — bed/wardrobe/etc.
+                                    # always retain ≥ 20 % of their functional
+                                    # value, matching the intuition "a partially
+                                    # exposed bed is still a bed, a blocked
+                                    # window is still a window".
 
 # Back-compat shims (kept so old code that imports these doesn't break).
-# They have no effect under v3 — the actual reward uses the ratios above.
-CELL_REWARD = 1.0
 WASTE_FACTOR = 1.0
 WCOEFF = WASTE_FACTOR * CELL_REWARD
 
@@ -140,9 +154,13 @@ def get_footprint(spec: FurnSpec, ori: int) -> tuple[int, int]:
 
 
 def _value(spec: FurnSpec) -> float:
-    """v2 availability: √area × per-category factor × CELL_REWARD."""
-    area = spec.w * spec.h
-    return math.sqrt(area) * AVAIL_FACTOR[spec.cat] * CELL_REWARD
+    """Availability per piece: area × CELL_REWARD (linear, single knob).
+
+    Big furniture (bed = 168 cells) naturally outweighs small (nightstand =
+    12 cells) without per-category fudge factors — a bedroom without a bed
+    isn't a bedroom, and the math reflects that.
+    """
+    return spec.w * spec.h * CELL_REWARD
 
 
 def encode_action(fid: int, x: int, y: int, ori: int) -> int:
@@ -277,31 +295,84 @@ class MyLittleBedroom(gym.Env):
         return self._observation(), reward, terminated, truncated, info
 
     def action_masks(self) -> np.ndarray:
-        """Vectorized mask of valid actions (~3-4 ms per call on CPU)."""
-        mask = np.zeros(N_ACTIONS, dtype=bool)
-        mask[ACTION_DONE] = True
+        """Vectorized mask of valid actions.
 
-        blocked = np.zeros((GH, GW), dtype=bool)
-        blocked[:, :] = True
-        blocked[:self.room_h, :self.room_w] = self.grid[:self.room_h, :self.room_w] > 0
+        Now enforces TWO levels of validity:
+
+        1. Geometric: footprint can't overlap walls / occupied cells / door
+           swing / OR functional zones of already-placed non-bed pieces. The
+           non-bed-zone block prevents agent from breaking those pieces'
+           accessibility (no zone_ok cliff at reward time).
+
+        2. Functional (own zone): the candidate's own functional zone (in
+           front of desk, around bed, etc.) must currently be clear and
+           in-bounds. Beds use partial=True semantics: any one zone cell
+           accessible is enough (loose). Other pieces require all zone cells
+           clear (strict).
+
+        Semantic gate: DONE allowed only after a bed has been placed.
+        Escape valve: if no placement is valid either, DONE is unblocked so
+        the env always has at least one valid action.
+        """
+        mask = np.zeros(N_ACTIONS, dtype=bool)
+        rw, rh = self.room_w, self.room_h
+
+        # ── Map A: base blocked (walls outside room + occupied + door swing) ──
+        base_blocked = np.zeros((GH, GW), dtype=bool)
+        base_blocked[:, :] = True
+        base_blocked[:rh, :rw] = self.grid[:rh, :rw] > 0
         if self.swing:
             sx, sy = zip(*self.swing)
-            blocked[np.asarray(sy), np.asarray(sx)] = True
+            base_blocked[np.asarray(sy), np.asarray(sx)] = True
 
-        integ = np.zeros((GH + 1, GW + 1), dtype=np.int32)
-        integ[1:, 1:] = blocked.astype(np.int32).cumsum(axis=0).cumsum(axis=1)
+        # ── Map B: non-bed pieces' functional zones (new placements can't enter) ──
+        other_zone_blocked = np.zeros((GH, GW), dtype=bool)
+        for p in self.placed:
+            if CATALOG[p.fid].cat == "bed":
+                continue   # bed zones are loose; allow placements (esp. nightstand)
+            for zx, zy, zw, zh in _zone_rects(p):
+                x0, x1 = max(0, zx), min(GW, zx + zw)
+                y0, y1 = max(0, zy), min(GH, zy + zh)
+                if x0 < x1 and y0 < y1:
+                    other_zone_blocked[y0:y1, x0:x1] = True
+
+        # Combined: any new footprint must not overlap either.
+        footprint_blocked = base_blocked | other_zone_blocked
+
+        # ── integral images ──
+        integ_fp = np.zeros((GH + 1, GW + 1), dtype=np.int32)
+        integ_fp[1:, 1:] = footprint_blocked.astype(np.int32).cumsum(axis=0).cumsum(axis=1)
+        # Own-zone check only cares about walls/occupied/swing (not other zones).
+        integ_base = np.zeros((GH + 1, GW + 1), dtype=np.int32)
+        integ_base[1:, 1:] = base_blocked.astype(np.int32).cumsum(axis=0).cumsum(axis=1)
+
+        def _rect_sum(integ, y1, x1, y2, x2):
+            return (integ[y2[:, None], x2[None, :]]
+                    - integ[y1[:, None], x2[None, :]]
+                    - integ[y2[:, None], x1[None, :]]
+                    + integ[y1[:, None], x1[None, :]])
 
         cat_counts: dict[str, int] = {}
         for p in self.placed:
             c = CATALOG[p.fid].cat
             cat_counts[c] = cat_counts.get(c, 0) + 1
 
+        # Bed-first constraint: the very first action must place a bed.
+        # Rationale: with zone-in-mask, placing non-bed pieces first often
+        # eats up the wall space a bed needs (bed is 14×6 = the widest piece).
+        # Forcing bed at step 0 guarantees a bedroom always has a bed and
+        # lets other pieces fit around it, instead of failing as a no-bed
+        # truncation (R=0).
+        restrict_to_bed = (len(self.placed) == 0)
+
         for fid, spec in enumerate(CATALOG):
+            if restrict_to_bed and spec.cat != "bed":
+                continue
             if self.strict_mask and cat_counts.get(spec.cat, 0) >= MAX_PER_CAT[spec.cat]:
                 continue
             for ori in range(N_ORI):
                 fw, fh = get_footprint(spec, ori)
-                if fw > self.room_w or fh > self.room_h:
+                if fw > rw or fh > rh:
                     continue
                 xs = np.arange(0, GW - fw + 1)
                 ys = np.arange(0, GH - fh + 1)
@@ -309,13 +380,54 @@ class MyLittleBedroom(gym.Env):
                     continue
                 x2 = xs + fw
                 y2 = ys + fh
-                sub = (
-                    integ[y2[:, None], x2[None, :]]
-                    - integ[ys[:, None], x2[None, :]]
-                    - integ[y2[:, None], xs[None, :]]
-                    + integ[ys[:, None], xs[None, :]]
-                )
-                vy, vx = np.where(sub == 0)
+
+                # ── footprint clear (geometry + others' zones) ──
+                sub = _rect_sum(integ_fp, ys, xs, y2, x2)
+                valid = (sub == 0)
+
+                # ── own-zone check (per (fid, ori) the offsets are fixed) ──
+                hypo = Placement(fid, 0, 0, fw, fh, ori)
+                zone_offsets = _zone_rects(hypo)   # at (0,0), so these are (dx, dy, dw, dh)
+                if zone_offsets:
+                    if spec.z3:
+                        # bed: partial=True. Need at least one empty cell summed across zones.
+                        total_empty = np.zeros((ys.size, xs.size), dtype=np.int32)
+                        for zdx, zdy, zdw, zdh in zone_offsets:
+                            zx1 = xs + zdx
+                            zy1 = ys + zdy
+                            zxe = zx1 + zdw
+                            zye = zy1 + zdh
+                            in_x = (zx1 >= 0) & (zxe <= GW)
+                            in_y = (zy1 >= 0) & (zye <= GH)
+                            in_bounds = in_y[:, None] & in_x[None, :]
+                            zx1c = np.clip(zx1, 0, GW)
+                            zxec = np.clip(zxe, 0, GW)
+                            zy1c = np.clip(zy1, 0, GH)
+                            zyec = np.clip(zye, 0, GH)
+                            blocked_sum = _rect_sum(integ_base, zy1c, zx1c, zyec, zxec)
+                            empty_in = np.where(in_bounds, zdw * zdh - blocked_sum, 0)
+                            total_empty += empty_in
+                        valid &= (total_empty >= 1)
+                    else:
+                        # non-bed: partial=False. All zone rects must be in-bounds AND all-clear.
+                        zone_ok = np.ones((ys.size, xs.size), dtype=bool)
+                        for zdx, zdy, zdw, zdh in zone_offsets:
+                            zx1 = xs + zdx
+                            zy1 = ys + zdy
+                            zxe = zx1 + zdw
+                            zye = zy1 + zdh
+                            in_x = (zx1 >= 0) & (zxe <= GW)
+                            in_y = (zy1 >= 0) & (zye <= GH)
+                            in_bounds = in_y[:, None] & in_x[None, :]
+                            zx1c = np.clip(zx1, 0, GW)
+                            zxec = np.clip(zxe, 0, GW)
+                            zy1c = np.clip(zy1, 0, GH)
+                            zyec = np.clip(zye, 0, GH)
+                            blocked_sum = _rect_sum(integ_base, zy1c, zx1c, zyec, zxec)
+                            zone_ok &= in_bounds & (blocked_sum == 0)
+                        valid &= zone_ok
+
+                vy, vx = np.where(valid)
                 if vy.size == 0:
                     continue
                 idxs = (
@@ -325,6 +437,12 @@ class MyLittleBedroom(gym.Env):
                     + ori
                 )
                 mask[idxs] = True
+
+        # DONE gate: allowed iff (a) a bed has been placed, or (b) no
+        # placement action is valid at all (escape valve so mask is never
+        # all-False — _reward() still gates no-bed episodes to R = 0).
+        has_bed = any(CATALOG[p.fid].cat == "bed" for p in self.placed)
+        mask[ACTION_DONE] = has_bed or not bool(mask[:ACTION_DONE].any())
         return mask
 
     def render(self) -> np.ndarray:
@@ -378,14 +496,16 @@ class MyLittleBedroom(gym.Env):
           light      = 1 − window_ratio
           efficiency = 1 − waste_ratio
 
-        where every penalty is the fraction of its relevant resource:
-            pillow_ratio  = exposed_pillow_cells / total_pillow_cells
+        where every penalty is a continuous geometric measure:
+            pillow_ratio  = 1 − angle_to_pillow_centroid / (π/2)
+                            (0° from door = fully exposed, 90° = fully private)
             window_ratio  = blocked_window_cells / window_strip_cells
             waste_ratio   = unreachable_cells   / total_empty_cells
 
-        Bed-body exposure (excluding pillow) is intentionally NOT penalised —
-        in real design privacy concerns the head end (where the pillow is),
-        not the side of the bed.
+        Privacy uses the pillow centroid (not per-cell exposure) and pure
+        angular deviation from the door's facing direction. Wardrobe-as-
+        privacy-shield is not modelled here (kept formula PPT-friendly);
+        wardrobes affect reward only through light and efficiency.
 
         Properties:
             • All ratios ∈ [0, 1] → scale-invariant across room sizes
@@ -396,59 +516,69 @@ class MyLittleBedroom(gym.Env):
         rw, rh, pl = self.room_w, self.room_h, self.placed
         swept = _flood(self.grid, self.door_pos, rw, rh) if pl else set()
 
-        cat_counts: dict[str, int] = {}
-        for p in pl:
-            cat_counts[CATALOG[p.fid].cat] = cat_counts.get(CATALOG[p.fid].cat, 0) + 1
-
         beds = [p for p in pl if CATALOG[p.fid].cat == "bed"]
-        nightstands = [p for p in pl if CATALOG[p.fid].cat == "nightstand"]
-        paired = _paired_nightstands(beds, nightstands)
 
-        # ── availability  (√area × cat_factor, plus pair bonus) ──
+        # ── availability  (area × CELL_REWARD, plus nightstand distance-decay bonus) ──
+        # Hard validity (no overlap / no zone violation / no out-of-room zone) is
+        # enforced by action_masks(); per-item value here is pure base value plus
+        # a smooth pairing bonus for nightstands.
         availability = 0.0
         per_item: list[tuple[str, float]] = []
         for p in pl:
             spec = CATALOG[p.fid]
-            base_v = _value(spec)
-            if cat_counts[spec.cat] > MAX_PER_CAT[spec.cat]:
-                per_item.append((spec.name, 0.0)); continue
-            if not _has_reachable_neighbor(p, swept):
-                per_item.append((spec.name, 0.0)); continue
-            mult, bonus = 1.0, 0.0
-            if spec.cat == "nightstand":
-                if id(p) in paired: bonus = NIGHTSTAND_PAIR_BONUS
-                else: mult = 0.5
-            allowed = {"nightstand"} if spec.cat == "bed" else set()
-            zone_ok = _zone_ok(p, self.grid, pl, rw, rh, allowed, partial=spec.z3)
-            val = base_v * mult + bonus if zone_ok else 0.0
+            val = _value(spec)
+            if spec.cat == "nightstand" and beds:
+                # Manhattan distance from nightstand centre to nearest headboard
+                # cell, decayed linearly over D_PAIR cells. Adjacent = full bonus.
+                d_min = min(_dist_to_headboard(p, b) for b in beds)
+                val += NIGHTSTAND_PAIR_BONUS * max(0.0, 1.0 - d_min / D_PAIR)
             availability += val
             per_item.append((spec.name, round(val * 10) / 10))
 
-        # ── trace door cone (for pillow ratio + visualization overlay) ──
+        # ── privacy: simple 1-D angular deviation from door's facing direction ──
+        # Treat the pillow as a single point (its centroid). Compute angle from
+        # door's facing direction to that centroid; map to exposure via the
+        # door's vision cone (±45°):
+        #
+        #   angle_dev ∈ [0, π/4]:  0 = pillow dead-centre of door cone (worst)
+        #                          π/4 = pillow at edge of cone (no exposure)
+        #   angle_dev ≥ π/4:       pillow outside cone (no exposure)
+        #
+        #   pillow_ratio = max(0, 1 − angle_dev / (π/4))
+        #
+        # No per-cell loop, no Bresenham, no distance — one angle → one ratio.
+        # Trades wardrobe-as-privacy-shield as an emergent strategy for a
+        # formula clean enough to fit on one PPT slide alongside
+        # efficiency = unreachable / total_empty.
         dcx, dcy, fac = _door_center("bottom", self.door_pos, rw, rh)
-        exposed: list[tuple[int, int]] = []
+        exposed: list[tuple[int, int]] = []           # kept for HUD overlay
         total_bed = 0
-        exposed_pillow_n = 0
+        exposed_pillow_n = 0                          # display-only stub
         total_pillow_n = 0
         if beds:
             pillow_set = {c for b in beds for c in _pillow_cells(b)}
             total_pillow_n = len(pillow_set)
+            # Pillow centroid (cell-centre coordinates)
+            pcx = sum(c[0] for c in pillow_set) / len(pillow_set) + 0.5
+            pcy = sum(c[1] for c in pillow_set) / len(pillow_set) + 0.5
+            ang = math.atan2(pcy - dcy, pcx - dcx)
+            angle_dev = abs((ang - fac + math.pi) % (2 * math.pi) - math.pi)
+            pillow_ratio = max(0.0, 1.0 - angle_dev / (math.pi / 4))
+            # for HUD: still trace which bed cells the door can see (visual only)
+            cone_half = math.pi / 4
             for b in beds:
                 for by in range(b.fh):
                     for bx in range(b.fw):
                         total_bed += 1
                         gx, gy = b.x + bx, b.y + by
-                        ang = math.atan2(gy + 0.5 - dcy, gx + 0.5 - dcx)
-                        df = (ang - fac + math.pi) % (2 * math.pi) - math.pi
-                        if abs(df) < math.pi / 4:
-                            if not _bresenham_blocked(round(dcx), round(dcy), gx, gy,
-                                                      self.grid, pl, rw, rh):
-                                exposed.append((gx, gy))
-                                if (gx, gy) in pillow_set:
-                                    exposed_pillow_n += 1
-
-        # ── ratios ──
-        pillow_ratio = exposed_pillow_n / max(total_pillow_n, 1)
+                        a = math.atan2(gy + 0.5 - dcy, gx + 0.5 - dcx)
+                        df = (a - fac + math.pi) % (2 * math.pi) - math.pi
+                        if abs(df) < cone_half:
+                            exposed.append((gx, gy))
+                            if (gx, gy) in pillow_set:
+                                exposed_pillow_n += 1
+        else:
+            pillow_ratio = 0.0
         n_window_blocked = _window_blocked_cells(
             self.win_wall, self.win_pos, self.win_w, rw, rh, self.grid, pl)
         window_strip_cells = self.win_w * 2          # 2-deep strip in front of window
@@ -463,10 +593,22 @@ class MyLittleBedroom(gym.Env):
             waste_ratio = unreachable / max(total_empty, 1)
 
         # ── three independent multiplicative discounts ──
-        privacy    = 1.0 - pillow_ratio
-        light      = 1.0 - window_ratio
-        efficiency = 1.0 - waste_ratio
+        # privacy / light: linear remap to [FACTOR_FLOOR, 1] — every ratio
+        # change moves the factor (no flat zone like a hard floor), but
+        # extreme ratios still don't wipe out the rest of the reward.
+        # efficiency: full [0, 1] — wall-hugging gets the strongest signal.
+        soft = 1.0 - FACTOR_FLOOR
+        privacy    = 1.0 - soft * pillow_ratio       # ∈ [FACTOR_FLOOR, 1]
+        light      = 1.0 - soft * window_ratio       # ∈ [FACTOR_FLOOR, 1]
+        efficiency = 1.0 - waste_ratio                # ∈ [0, 1]
         total = round(availability * privacy * light * efficiency * 10) / 10
+
+        # ── semantic gate: a bedroom isn't a bedroom without a bed ──
+        # Closes the truncation loophole: even if max_steps runs out before
+        # agent places a bed, the episode reward is forced to 0.
+        has_bed = any(CATALOG[p.fid].cat == "bed" for p in self.placed)
+        if not has_bed:
+            total = 0.0
 
         # Express each discount as "points lost" for the right-panel display.
         # privacy_loss + light_loss + waste_loss + total = availability.
@@ -588,6 +730,19 @@ def _pillow_cells(p: Placement) -> list[tuple[int, int]]:
     if o == 1:   return [(p.x + i, p.y) for i in range(p.fw)]
     if o == 2:   return [(p.x + p.fw - 1, p.y + i) for i in range(p.fh)]
     return [(p.x + i, p.y + p.fh - 1) for i in range(p.fw)]
+
+
+def _dist_to_headboard(ns: Placement, bed: Placement) -> float:
+    """Manhattan distance from a nightstand's centre to the nearest pillow
+    (headboard) cell of the bed. Used for the continuous pairing bonus."""
+    nsx = ns.x + ns.fw / 2.0
+    nsy = ns.y + ns.fh / 2.0
+    best = float("inf")
+    for hx, hy in _pillow_cells(bed):
+        d = abs(nsx - (hx + 0.5)) + abs(nsy - (hy + 0.5))
+        if d < best:
+            best = d
+    return best
 
 
 def _has_reachable_neighbor(p: Placement, swept: set[tuple[int, int]]) -> bool:

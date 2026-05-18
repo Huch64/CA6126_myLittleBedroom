@@ -3,7 +3,19 @@
 > CA6126 RL Final Project · MaskablePPO agent learns to furnish a randomized bedroom
 >
 > `R = A × privacy × light × efficiency`
-> &nbsp;&nbsp;`privacy = 1 − pillow_ratio` · `light = 1 − window_ratio` · `efficiency = 1 − waste_ratio`
+> &nbsp;&nbsp;`privacy = 1 − 0.7 × pillow_ratio`   (linear remap to [0.3, 1])
+> · `light = 1 − 0.7 × window_ratio`             (linear remap to [0.3, 1])
+> · `efficiency = 1 − waste_ratio`                (full [0, 1], no floor)
+>
+> Privacy and light use a linear remap to **[0.3, 1.0]** so every ratio
+> change produces a smooth factor change (no flat zone), but extreme
+> misses don't wipe out the rest of the reward. Efficiency uses the
+> **full [0, 1]** range — agent has the strongest incentive to use space
+> well (e.g. push furniture against walls instead of leaving dead corners).
+>
+> **Semantic gate**: `R = 0` if no bed is placed (a bedroom must have a bed).
+> Enforced by both (a) action mask blocking DONE until bed exists, and
+> (b) reward gate returning 0 at episode end if no bed.
 >
 > Both `env.py` and the interactive HTML preview implement this v3 reward.
 > Every penalty is a fraction of its relevant resource in [0, 1], so each
@@ -64,7 +76,13 @@ a = (furniture_id, x, y, orientation) | DONE
 
 Flat index: fid × (26×22×4) + x × (22×4) + y × 4 + ori
 Total: 18 × 26 × 22 × 4 + 1 = 41,185
-Most actions masked (overlap / out of bounds / door swing)
+Most actions masked (overlap / out of bounds / door swing).
+DONE is additionally masked until ≥ 1 bed has been placed
+(semantic constraint: bedroom must have a bed).
+Step 0 is restricted to bed actions only (bed-first constraint), so the
+bed is always placed before any other piece can claim the room's wall
+space — necessary because the bed is the widest piece (14 cells) and
+otherwise often becomes unplaceable late in an episode.
 ```
 
 ### Transition *T*
@@ -102,9 +120,11 @@ Computed once at episode end:
 ```
 R = Availability × privacy × light × efficiency
 
-  privacy    = 1 − pillow_ratio    (door can't peek at pillow)
-  light      = 1 − window_ratio    (window not blocked)
-  efficiency = 1 − waste_ratio     (room is walkable)
+  privacy    = 1 − (1 − FACTOR_FLOOR) × pillow_ratio    (door can't peek at pillow)
+  light      = 1 − (1 − FACTOR_FLOOR) × window_ratio    (window not blocked)
+  efficiency = 1 − waste_ratio                          (room walkable, no floor)
+
+  FACTOR_FLOOR = 0.3   (soft factors range [0.3, 1] linearly; efficiency full [0, 1])
 ```
 
 Four factors, zero weights, zero τ, no transcendentals. Each ratio is a
@@ -112,10 +132,11 @@ fraction of its relevant resource in [0, 1], so the corresponding
 `(1 − ratio)` is automatically a discount in [0, 1] with **one physical
 meaning per factor**:
 
-- pillow fully exposed (`pillow_ratio = 1`) → privacy = 0 → R = 0
-- half the window blocked (`window_ratio = 0.5`) → ×0.5
-- 20 % dead space (`waste_ratio = 0.2`) → efficiency = ×0.8
-- all three combine multiplicatively, no clamping needed
+- pillow fully exposed (`pillow_ratio = 1`) → privacy = 0.3 (floor)
+- pillow at cone edge (`pillow_ratio = 0`) → privacy = 1.0 (full)
+- half the window blocked (`window_ratio = 0.5`) → light = 0.65
+- 30 % dead space (`waste_ratio = 0.3`) → efficiency = 0.70
+- privacy and light always retain ≥ 0.3 (smooth floor), efficiency can hit 0
 
 Two key properties:
 
@@ -124,14 +145,28 @@ Two key properties:
 2. **No DONE-trap**: R = 0 iff Availability = 0 (DONE-immediate) or some
    ratio hits 1. Any sensible placement → R > 0, so "do nothing" is never
    the locally safe choice.
+3. **Bed-required semantic gate**: even if all four factors are positive,
+   `R` is overridden to 0 if no bed is in the final layout. Combined with
+   the DONE-mask constraint, this closes the "skip bed for stability"
+   local optimum that emerged in earlier training runs.
+4. **Asymmetric ranges for stability + signal**: `privacy` and `light` are
+   linearly remapped to [0.3, 1.0] — every ratio change produces a smooth
+   factor change (no flat zone), and a severe miss only halves the reward
+   instead of wiping it. `efficiency` keeps the full [0, 1] range — agent
+   has the strongest incentive to eliminate dead space (e.g. push
+   furniture against walls).
+5. **Hard/soft separation**: validity is in the *action mask* (mandatory
+   bed, no overlap, zone clear, no out-of-bounds zone). Optimization is
+   in the *reward factors* (privacy, light, efficiency, nightstand pair
+   bonus). Every legal placement gets full base value — no cliffs hidden
+   inside availability.
 
 Defaults in `env.py`:
 
 ```python
-AVAIL_FACTOR = {"bed": 0.32, "desk": 0.43, "wardrobe": 0.33,
-                "cabinet": 0.37, "nightstand": 0.29}
+CELL_REWARD = 0.05            # value per cell of furniture occupancy
 NIGHTSTAND_PAIR_BONUS = 1.0   # absolute bonus when paired with headboard
-# No weights, no τ — each (1 − ratio) is an independent discount factor.
+# No per-category factor, no weights, no τ — single knob total.
 ```
 
 ---
@@ -140,15 +175,27 @@ NIGHTSTAND_PAIR_BONUS = 1.0   # absolute bonus when paired with headboard
 
 ### ✅ Availability = Σ usable furniture value
 
-`value = √(area in cells) × cat_factor` (sub-linear: big furniture has
-diminishing returns). Each piece scores only if ALL conditions hold:
+`value = (area in cells) × CELL_REWARD` (linear, single knob; no per-category
+factor). Big furniture (bed = 168 cells) outweighs small (nightstand = 12
+cells) naturally.
 
-| Condition | Rule |
-|-----------|------|
-| No duplicate | 2nd of same category → both score 0 (nightstand allows 2) |
-| Zone clear | Functional zone cells empty + in bounds |
-| Reachable | Furniture neighbor in flood-fill swept set |
-| Bed special | ≥ 1 long side with cells in swept (not just any 1 cell) |
+**Hard validity is enforced by the action mask, not by reward**: a placement
+is in the mask iff (a) it doesn't overlap walls/other furniture/door swing,
+(b) it doesn't fall in any other non-bed piece's functional zone, and (c)
+its own functional zone is clear (bed uses `partial=True` semantics — any
+one accessible zone cell suffices; other furniture requires the full zone
+clear). This means every *legal* placement gets full base value — there is
+no "placed but invalid" cliff at reward time.
+
+**Nightstand pairing**: continuous distance-decay bonus.
+
+```
+bonus = NIGHTSTAND_PAIR_BONUS × max(0, 1 − d / D_PAIR)
+```
+
+where `d` is the Manhattan distance from the nightstand centre to the
+nearest pillow (headboard) cell, `D_PAIR = 4 cells`. Adjacent = full bonus
+of `+1.0`; far away = base value only. Smooth gradient, no binary cliff.
 
 Functional zones:
 
@@ -162,15 +209,31 @@ Functional zones:
 
 **Nightstand pairing**: on bed's long side + aligned with headboard → **+1 bonus** (absolute), unpaired → ×0.5 multiplier.
 
-### 👀 Privacy  →  privacy = (1 − pillow_ratio)
+### 👀 Privacy  →  privacy = 1 − 0.7 × pillow_ratio  (∈ [0.3, 1])
 
 ```
-pillow_ratio = exposed_pillow_cells / total_pillow_cells
+angle_dev   = |angle from door's facing direction to pillow centroid|
+pillow_ratio = max(0, 1 − angle_dev / (π/4))
 ```
 
-Fraction of pillow cells visible from door's 90° cone, unblocked by
-wardrobe. Pillow fully hidden → privacy = 1 (no discount). Pillow fully
-exposed → privacy = 0 → R = 0.
+Treat the pillow as one point (its centroid). Measure how far that point is
+from the door's facing direction. Inside the door's ±45° cone, exposure
+falls off linearly with angle (0° → full exposure, 45° → no exposure).
+Outside the cone, no exposure.
+
+One angle → one ratio. No per-cell iteration, no Bresenham line-of-sight,
+no distance term. Matches the simplicity of `efficiency = unreachable /
+total_empty` so all three soft factors fit one slide:
+
+| Factor | Formula |
+|--------|---------|
+| Privacy | `1 − angle_to_pillow / (π/4)` (clamped to cone) |
+| Light | `blocked_window_cells / window_strip_cells` |
+| Efficiency | `unreachable / total_empty` |
+
+Wardrobes affect reward only through **light** and **efficiency** in this
+simplified design. The "wardrobe-as-privacy-shield" emergent strategy is
+sacrificed for one-line interpretability.
 
 **Bed body exposure (excluding pillow) is intentionally NOT penalised** —
 in real design, privacy concerns the head end (where the pillow is), not
@@ -219,18 +282,17 @@ is "healthy" before launching a multi-hour training run.
 
 ## 🪑 Catalog — 5 categories, 18 pieces
 
-| Category | Variant | Grid w×h | Value | Limit |
-|----------|---------|----------|-------|-------|
-| 🛏️ Bed | 0.9 | 14×6 | 3 | pick 1 |
-| | 1.2 | 14×8 | 3.5 | |
-| | 1.5 | 14×10 | 4 | |
-| | 1.8 | 14×12 | 4 | |
-| 🖥️ Desk | S / L / XL | 6-12 × 4 | 2.5-3 | pick 1 (includes chair 4×4) |
-| 👔 Wardrobe | S-XXL | 6-14 × 4 | 1.5-2.5 | pick 1 |
-| 🗄️ Cabinet | S-XL | 4-10 × 3 | 1-2 | pick 1 |
-| 🛋️ Nightstand | A / B | 4×3 / 3×3 | 1 | up to 2 |
+| Category | Variant | Grid w×h | Value (area × 0.05) | Limit |
+|----------|---------|----------|---------------------|-------|
+| 🛏️ Bed | 0.9 / 1.2 / 1.5 / 1.8 | 14×6 / 14×8 / 14×10 / 14×12 | 4.2 / 5.6 / 7.0 / **8.4** | pick 1 |
+| 🖥️ Desk | S / L / XL | 6×4 / 8×4 / 12×4 | 1.2 / 1.6 / 2.4 | pick 1 (includes chair 4×4) |
+| 👔 Wardrobe | S / M / L / XL / XXL | 6-14 × 4 | 1.2 / 1.6 / 2.0 / 2.4 / 2.8 | pick 1 |
+| 🗄️ Cabinet | S / M / L / XL | 4-10 × 3 | 0.6 / 0.9 / 1.2 / 1.5 | pick 1 |
+| 🛋️ Nightstand | A / B | 4×3 / 3×3 | 0.6 / 0.45 (+1 paired) | up to 2 |
 
-Value ≈ √area, encourages bigger pieces when space allows.
+Value = area × 0.05, linear in occupancy. Bed dominates by design — Bed 1.8
+alone (8.4) is ≈50 % of the catalog's max sum, so the agent can't reach high
+reward without learning to place the bed well.
 
 ---
 
@@ -254,13 +316,19 @@ Value ≈ √area, encourages bigger pieces when space allows.
 # Swing cells blocked for furniture placement
 ```
 
-### Bresenham Vision (Privacy)
+### Privacy (angular)
 
 ```python
-# 90° cone (±45°) from door center
-# For each bed cell in cone: trace ray, check if wardrobe blocks it
-# Only wardrobe blocks (tall enough), all other furniture transparent
+# Pillow centroid = mean of pillow cells (depends on bed orientation)
+# angle_dev = |angle from door's facing direction to pillow centroid|
+# pillow_ratio = max(0, 1 − angle_dev / (π/4))
+#   = 1 when pillow dead-centre of door's ±45° cone
+#   = 0 when pillow at or beyond cone edge
+# privacy = 1 − (1 − FACTOR_FLOOR) × pillow_ratio
 ```
+
+Earlier versions used per-cell ray tracing + wardrobe Bresenham blocking;
+simplified to single-angle for PPT clarity (see Reward Detail).
 
 ### Nightstand Pairing
 
@@ -333,11 +401,11 @@ class MyLittleBedroom(gym.Env):
         # Return obs, reward, done, truncated, info
     
     def calc_reward(self):
-        # Availability: Σ (√area × cat_factor) × pair/mult adjustments
-        # privacy    = 1 − pillow_ratio
-        # light      = 1 − window_ratio
-        # efficiency = 1 − waste_ratio
-        # Return A × privacy × light × efficiency
+        # Availability: Σ (area × CELL_REWARD) + nightstand distance-decay bonus
+        # privacy    = 1 − (1 − FACTOR_FLOOR) × pillow_ratio    (∈ [0.3, 1])
+        # light      = 1 − (1 − FACTOR_FLOOR) × window_ratio    (∈ [0.3, 1])
+        # efficiency = 1 − waste_ratio                           (∈ [0, 1])
+        # Return A × privacy × light × efficiency, gated to 0 if no bed
     
     def action_masks(self):
         # For each (fid, x, y, ori): check bounds + no overlap + not in swing
@@ -361,6 +429,6 @@ class MyLittleBedroom(gym.Env):
 
 ## ❓ Open Questions
 
-- 🛏️ Will the agent skip bed in tiny rooms where pillow can't be hidden? Worst case `pillow_ratio = 1` → privacy = 0 → R = 0. Watch training for "skip-bed" behaviour
+- 🛏️ Will the agent skip bed in tiny rooms where pillow can't be hidden? Worst case `pillow_ratio = 1` → privacy = 0.3 (floor), so reward is reduced but not zero. Bed-first mask + reward gate guarantee a bed is always placed
 - ⏹️ Early stopping after 1-2 items? v3 eliminates the DONE-trap (R = 0 only when A = 0 or some `(1 − ratio) = 0`), but agent could still settle for partial play if the marginal availability of the next item < the marginal discount it incurs. Audit shows greedy = +0.35, optimal likely +5 to +10
 - 🏗️ Bed accessibility: currently "partial OK" (≥1 cell of long side in swept); may want ≥50% for stricter realism

@@ -36,17 +36,67 @@ from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
+import torch
+import torch.nn as nn
 
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+from sb3_contrib.common.maskable.policies import MaskableActorCriticPolicy
 from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
-from env import (CATALOG, DW, GH, GW, GRID_M, MAX_PER_CAT, N_ACTIONS,
-                 WCOEFF, MyLittleBedroom)
+from env import (CATALOG, DW, GH, GW, GRID_M, MAX_PER_CAT, N_ACTIONS, N_FURN,
+                 N_ORI, WCOEFF, MyLittleBedroom)
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Factored output head: 64-dim latent → fid/x/y/ori/done logits separately,
+# then combined into the joint 41185-action logit space. Compared to a flat
+# 64→41185 linear (≈ 2.66 M params), this is 64×(18+26+22+4+1) ≈ 4.5 K
+# params — every parameter sees ~10³ more effective updates per sample.
+# Trade-off: assumes independence P(a) = P(fid)·P(x)·P(y)·P(ori), but the
+# action mask still filters invalid combinations at sampling time.
+# ────────────────────────────────────────────────────────────────────────
+class FactoredActionNet(nn.Module):
+    def __init__(self, in_dim: int,
+                 n_furn: int = N_FURN, gw: int = GW,
+                 gh: int = GH, n_ori: int = N_ORI):
+        super().__init__()
+        self.fid_head  = nn.Linear(in_dim, n_furn)
+        self.x_head    = nn.Linear(in_dim, gw)
+        self.y_head    = nn.Linear(in_dim, gh)
+        self.ori_head  = nn.Linear(in_dim, n_ori)
+        self.done_head = nn.Linear(in_dim, 1)
+        self.n_furn, self.gw, self.gh, self.n_ori = n_furn, gw, gh, n_ori
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        # features: (B, in_dim) → (B, N_FURN * GW * GH * N_ORI + 1)
+        B = features.shape[0]
+        fid  = self.fid_head(features).view(B, self.n_furn, 1, 1, 1)
+        x    = self.x_head(features).view(B, 1, self.gw,   1, 1)
+        y    = self.y_head(features).view(B, 1, 1, self.gh, 1)
+        ori  = self.ori_head(features).view(B, 1, 1, 1, self.n_ori)
+        done = self.done_head(features)                        # (B, 1)
+        joint = fid + x + y + ori                              # (B, F, W, H, O)
+        # Flatten in the same order as encode_action():
+        #   idx = fid*GW*GH*N_ORI + x*GH*N_ORI + y*N_ORI + ori
+        joint_flat = joint.reshape(B, -1)                      # (B, 41184)
+        return torch.cat([joint_flat, done], dim=1)            # (B, 41185)
+
+
+class FactoredMaskablePolicy(MaskableActorCriticPolicy):
+    """MaskablePPO policy with our FactoredActionNet replacing the dense head."""
+    def _build(self, lr_schedule):
+        super()._build(lr_schedule)
+        latent_dim = self.mlp_extractor.latent_dim_pi
+        self.action_net = FactoredActionNet(latent_dim)
+        # Re-build the optimizer so it sees the new parameters.
+        self.optimizer = self.optimizer_class(
+            self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
+        )
 
 
 def _mask_fn(env):
@@ -161,6 +211,9 @@ class EpisodeBreakdownLogger(BaseCallback):
                 bd["unreachable_cells"],
                 "|".join(cats),
             ])
+            # flush so `tail -f episodes.csv` shows new rows immediately
+            # (csv writer otherwise buffers and tailing looks frozen).
+            self._fh.flush()
             # TensorBoard aggregates (these show up under custom/ in TB)
             self.logger.record_mean("custom/availability", bd["availability"])
             self.logger.record_mean("custom/privacy",      bd["privacy"])
@@ -175,6 +228,55 @@ class EpisodeBreakdownLogger(BaseCallback):
         if self._fh:
             self._fh.flush()
             self._fh.close()
+
+
+class LiveProgressCallback(BaseCallback):
+    """Prints a rolling-window summary every N episodes — gives a clear
+    "is training going well?" signal directly in stdout, so teammates don't
+    need a separate `tail -f` window. Prints look like:
+
+      [live] step=  5624  ep=  1000  total=2.49  priv=0.64  light=0.81 ...
+
+    where `total` is the rolling mean of the last `window` episodes.
+    """
+
+    HEADER = ("[live] step=  step  ep=     ep  total=##.##  "
+              "priv=#.##  light=#.##  eff=#.##  n_pl=#.#  bed=##%")
+
+    def __init__(self, window: int = 500, every: int = 500):
+        super().__init__()
+        self.window = window
+        self.every = every
+        self.recent: list[dict] = []
+        self._ep_count = 0
+
+    def _on_step(self) -> bool:
+        for info in self.locals.get("infos", []):
+            bd = info.get("breakdown")
+            if bd is None:
+                continue
+            cats = info.get("cats_placed", [])
+            self._ep_count += 1
+            self.recent.append({
+                "total": bd["total"],
+                "priv":  bd["privacy"],
+                "light": bd["light"],
+                "eff":   bd["efficiency"],
+                "n_pl":  len(cats),
+                "bed":   1 if "bed" in cats else 0,
+            })
+            if len(self.recent) > self.window:
+                self.recent.pop(0)
+            if self._ep_count % self.every == 0:
+                w = self.recent
+                n = len(w)
+                avg = lambda k: sum(r[k] for r in w) / n
+                print(f"[live] step={self.num_timesteps:>6}  ep={self._ep_count:>5}  "
+                      f"total={avg('total'):.2f}  priv={avg('priv'):.2f}  "
+                      f"light={avg('light'):.2f}  eff={avg('eff'):.2f}  "
+                      f"n_pl={avg('n_pl'):.1f}  bed={avg('bed'):.0%}",
+                      flush=True)
+        return True
 
 
 def main():
@@ -238,9 +340,15 @@ def main():
                                      args.placement_bonus)])
 
     # ── model ────────────────────────────────────────────
+    # MLP backbone widened to 128-128 (was 64-64). Factored output head saves
+    # ~2.6 M params on the output side, so we can afford a richer backbone.
+    policy_kwargs = dict(net_arch=dict(pi=[128, 128], vf=[128, 128]))
+    # Linear LR decay: starts at args.lr, ramps to 0 over training.
+    # SB3 calls the schedule with `progress_remaining` ∈ [1, 0].
+    lr_schedule = lambda progress_remaining: args.lr * progress_remaining
     model = MaskablePPO(
-        "MlpPolicy", vec_env,
-        learning_rate=args.lr,
+        FactoredMaskablePolicy, vec_env,
+        learning_rate=lr_schedule,
         n_steps=args.n_steps,
         batch_size=args.batch_size,
         n_epochs=10,
@@ -252,6 +360,7 @@ def main():
         max_grad_norm=0.5,
         verbose=1,
         seed=args.seed,
+        policy_kwargs=policy_kwargs,
     )
 
     # Direct logger: progress.csv + TB events both land in run_dir/.
@@ -260,6 +369,7 @@ def main():
 
     # ── callbacks ────────────────────────────────────────
     ep_logger = EpisodeBreakdownLogger(run_dir / "episodes.csv")
+    live_cb = LiveProgressCallback(window=500, every=500)
     eval_cb = MaskableEvalCallback(
         eval_env,
         best_model_save_path=str(run_dir / "best"),
@@ -285,7 +395,7 @@ def main():
     try:
         model.learn(
             total_timesteps=args.timesteps,
-            callback=[ep_logger, eval_cb],
+            callback=[ep_logger, live_cb, eval_cb],
             progress_bar=True,
         )
     except KeyboardInterrupt:
