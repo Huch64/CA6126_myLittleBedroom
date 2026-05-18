@@ -17,7 +17,7 @@
 
 ## 当前版本核心
 
-**Reward**：`R = Availability × privacy × light × efficiency + diversity`
+**Reward**：`R = Availability × privacy × light × efficiency + diversity + compactness`
 
 - **硬约束放在 action mask**：必须有床、step 0 强制放床、不越界、功能区合理、床头柜强制贴床头、DONE 在床放过后才解锁
 - **软偏好放在 reward**（连续梯度）：
@@ -25,7 +25,8 @@
   - `privacy` = `1 − 0.7 × exposure_ratio` ∈ [0.3, 1]，**床被门看到的加权比例**（枕头 cells 权重 10，床身 1，衣柜可挡视线）
   - `light` = `1 − 0.7 × window_ratio` ∈ [0.3, 1]，窗户被高家具挡的比例
   - `efficiency` = `1 − waste_ratio` ∈ [0, 1]，**不设 floor**，强化空间利用激励
-  - `diversity` = `+1 per distinct category` (max +5)，**加在乘积之外**，奖励放齐 5 类家具（床/桌/衣柜/柜子/床头柜），抵消单纯按面积评分对床的偏爱
+  - `diversity` = `n_categories² / 5` (二次方: 0.2/0.8/1.8/3.2/5.0)，**加在乘积之外**，鼓励放齐 5 类家具（床/桌/衣柜/柜子/床头柜），二次曲线让全放跳升最大（3.2→5.0）
+  - `compactness` = `5 × (1 − (perim/√area − 4)/8)` ∈ [0, 5]，剩余空地的形体系数（门扇 swing 算非空）。奖励"家具凑团、空地形状规整"，抑制衣柜/桌子放中间产生破碎空间
 
 **网络**：Factored output heads（fid/x/y/ori/done 分头预测，合成 41185 联合 logit + mask + softmax）；MLP backbone 128-128；LR linear decay。
 
@@ -157,7 +158,7 @@ if CATALOG[p.fid].cat == "bed":
 
 - `FACTOR_FLOOR = 0.3`（privacy/light 的下限）
 - `0.7`（线性 remap 的系数，即 1 − FACTOR_FLOOR）
-- `DIVERSITY_BONUS_PER_CAT = 1.0`（每类家具的 diversity 分数）
+- `diversity = n_cats² / 5`（二次方曲线: 0.2/0.8/1.8/3.2/5.0）
 - `CELL_REWARD = 0.05`（每格家具的 availability 单价）
 
 都没系统调过，跑通就用了。

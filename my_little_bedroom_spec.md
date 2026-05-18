@@ -2,11 +2,12 @@
 
 > CA6126 RL Final Project · MaskablePPO agent learns to furnish a randomized bedroom
 >
-> `R = Availability × privacy × light × efficiency + diversity`
+> `R = Availability × privacy × light × efficiency + diversity + compactness`
 > &nbsp;&nbsp;`privacy = 1 − 0.7 × exposure_ratio`   (linear remap to [0.3, 1])
 > · `light = 1 − 0.7 × window_ratio`             (linear remap to [0.3, 1])
 > · `efficiency = 1 − waste_ratio`                (full [0, 1], no floor)
-> · `diversity = +1 per distinct category`        (max +5, added outside product)
+> · `diversity = n_categories² / 5`                (quadratic: 0.2/0.8/1.8/3.2/5.0, outside product)
+> · `compactness = 5 × (1 − (perim/√area − 4)/8)` (shape coefficient of empty space, swing transparent, ∈ [0, 5])
 >
 > Privacy and light use a linear remap to **[0.3, 1.0]** so every ratio
 > change produces a smooth factor change (no flat zone), but extreme
@@ -145,16 +146,18 @@ orientations + 1 DONE. Per step, the action mask typically leaves
 Computed once at episode end:
 
 ```
-R = Availability × privacy × light × efficiency + diversity
+R = Availability × privacy × light × efficiency + diversity + compactness
 
-  privacy    = 1 − (1 − FACTOR_FLOOR) × exposure_ratio    (door can't peek at pillow)
-  light      = 1 − (1 − FACTOR_FLOOR) × window_ratio    (window not blocked)
-  efficiency = 1 − waste_ratio                          (room walkable, no floor)
-  diversity  = DIVERSITY_BONUS_PER_CAT × n_distinct_categories  (max +5)
+  privacy     = 1 − (1 − FACTOR_FLOOR) × exposure_ratio    (door can't peek at pillow)
+  light       = 1 − (1 − FACTOR_FLOOR) × window_ratio      (window not blocked)
+  efficiency  = 1 − waste_ratio                            (room walkable, no floor)
+  diversity   = n_distinct_categories² / 5         (quadratic, 0.2..5.0)
+  compactness = 5 × (1 − (perim/√area − 4)/8)               (shape coef of empty space)
 
   FACTOR_FLOOR = 0.3              (soft factors [0.3, 1] linearly; efficiency [0, 1])
-  DIVERSITY_BONUS_PER_CAT = 1.0   (added OUTSIDE the product so the bonus isn't
-                                   multiplied away by a single bad placement)
+  diversity is quadratic (n²/5) and compactness is shape-coef-based — both
+  added OUTSIDE the product so bonuses aren't multiplied away by a single
+  bad placement.
 ```
 
 Three multiplicative discount factors + one additive bonus. Each ratio is
@@ -189,16 +192,16 @@ Two key properties:
    bed, no overlap, zone clear, no out-of-bounds zone, **nightstand
    restricted to the 2 natural slots at bed headboard with ns_ori =
    bed.ori**). Optimization is in the *reward factors* (privacy, light,
-   efficiency, diversity). Every legal placement gets full base value —
-   no cliffs hidden inside availability.
+   efficiency, diversity, compactness). Every legal placement gets full
+   base value — no cliffs hidden inside availability.
 
 Defaults in `env.py`:
 
 ```python
 CELL_REWARD = 0.05                  # value per cell of furniture occupancy
-DIVERSITY_BONUS_PER_CAT = 1.0       # +1 per distinct category (max +5)
+# diversity   = n_categories² / 5    → 0.2 / 0.8 / 1.8 / 3.2 / 5.0  (quadratic)
+# compactness = 5 × (1 − (perim/√area − 4)/8)   ∈ [0, 5]
 FACTOR_FLOOR = 0.3                  # soft-factor floor for privacy / light
-# No per-category factor, no weights, no τ — single knob per term.
 ```
 
 ---
@@ -250,11 +253,11 @@ Functional zones:
 | 🗄️ Cabinet | 1 front | 3 cells | Fully clear |
 | 🛋️ Nightstand | n/a (mask-restricted) | — | accessed via bed; zone check bypassed |
 
-### 🎨 Diversity  →  diversity = +1 × n_distinct_categories  (max +5)
+### 🎨 Diversity  →  diversity = n_distinct_categories² / 5  (quadratic, 0.2..5.0)
 
-Flat bonus added **outside** the multiplicative product so the bonus for
-placing all 5 furniture categories (bed / desk / wardrobe / cabinet /
-nightstand) is **never multiplied away** by a single poor-quality
+Quadratic bonus added **outside** the multiplicative product so the
+bonus for placing all 5 furniture categories (bed / desk / wardrobe /
+cabinet / nightstand) is **never multiplied away** by a single poor-quality
 placement. Counter-balances the bed-dominates-area bias of pure
 availability — a 5-category layout always beats a bed-only layout, all
 else equal.
@@ -316,7 +319,7 @@ availability = 0 → R = 0 anyway.
 |---------|-----------|------------|
 | **v1** (initial) | A − D − W (additive, binary lumps `+4` for pillow / `+3` for window) | Original hand-tuned reward; binary cliffs created the DONE-trap |
 | **v2** | A − D − W (unified `cells × factor × CELL_REWARD`) | Removed binary discontinuities; everything per-cell |
-| **v3** (current — env.py + HTML) | A × privacy × light × efficiency + diversity | Each factor `1 − ratio` is an independent discount in [0, 1] with one physical meaning; diversity is an outside-the-product `+1 per category` bonus (max +5) so full-set layouts always beat bed-only; eliminates DONE-trap; scale-invariant across room sizes |
+| **v3** (current — env.py + HTML) | A × privacy × light × efficiency + diversity + compactness | Each factor `1 − ratio` is an independent discount in [0, 1] with one physical meaning; diversity is an outside-the-product quadratic `n²/5` bonus (max +5) — biggest jump at the 5-cat full set, encouraging completion without saturating early; compactness adds a shape-coefficient bonus (max +5) penalizing fragmented empty space; eliminates DONE-trap; scale-invariant across room sizes |
 
 Audit-driven derivation: `python reward_audit.py` runs random / greedy /
 edge-greedy policies + a continuity sweep on the current env, plotting the
@@ -460,12 +463,13 @@ class MyLittleBedroom(gym.Env):
     
     def calc_reward(self):
         # Availability: Σ (area × CELL_REWARD)
-        # diversity  : +1 per distinct category placed (max +5)
-        # privacy    = 1 − (1 − FACTOR_FLOOR) × exposure_ratio    (∈ [0.3, 1])
-        # light      = 1 − (1 − FACTOR_FLOOR) × window_ratio      (∈ [0.3, 1])
-        # efficiency = 1 − waste_ratio                            (∈ [0, 1])
-        # Return Availability × privacy × light × efficiency + diversity,
-        # gated to 0 if no bed.
+        # diversity   : n_categories² / 5 (quadratic, 0.2..5.0)
+        # compactness : 5 × (1 − (perim/√area − 4)/8) ∈ [0, 5]
+        # privacy     = 1 − (1 − FACTOR_FLOOR) × exposure_ratio    (∈ [0.3, 1])
+        # light       = 1 − (1 − FACTOR_FLOOR) × window_ratio      (∈ [0.3, 1])
+        # efficiency  = 1 − waste_ratio                            (∈ [0, 1])
+        # Return Availability × privacy × light × efficiency
+        #        + diversity + compactness, gated to 0 if no bed.
     
     def action_masks(self):
         # For each (fid, x, y, ori): check bounds + no overlap + not in swing

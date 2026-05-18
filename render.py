@@ -480,10 +480,12 @@ def _draw_room(ax, env, breakdown):
 
 
 def _draw_overlays(ax, env, breakdown):
-    """Three reward visualizations overlaid on the room (final frame only):
-       - flood-fill swept set  (light yellow tint)
-       - door 90° cone lines   (dashed yellow)
-       - exposed bed cells     (strong yellow tint)
+    """Reward visualizations overlaid on the room (final frame only):
+       - flood-fill swept set  (light yellow tint)            ← efficiency
+       - door 90° cone lines   (dashed yellow)                ← privacy
+       - exposed bed cells     (strong yellow tint)           ← privacy
+       - diversity: thick stroke around each placed piece
+       - compactness: yellow outline along the empty-region perimeter
     Functional zones are already drawn separately as dashed colored rects.
     """
     import math
@@ -507,6 +509,37 @@ def _draw_overlays(ax, env, breakdown):
         ax.add_patch(Rectangle((ex_x + 0.12, ex_y + 0.12), 0.76, 0.76,
                                facecolor=_LEM, alpha=0.6,
                                edgecolor="none", zorder=9.5))
+
+    # Diversity overlay: thick stroke around each placed furniture so
+    # viewers can immediately count "how many categories are here?".
+    for p in env.placed:
+        ax.add_patch(Rectangle((p.x + 0.03, p.y + 0.03),
+                               p.fw - 0.06, p.fh - 0.06,
+                               facecolor="none", edgecolor=_LEM,
+                               linewidth=1.8, alpha=0.8, zorder=10))
+
+    # Compactness overlay: yellow line along every empty-to-non-empty
+    # edge — visualizes the *perimeter* of the empty region, the
+    # numerator of the shape coefficient.
+    rw, rh = env.room_w, env.room_h
+    grid = env.grid
+    for y in range(rh):
+        for x in range(rw):
+            if grid[y, x] != 0:
+                continue
+            # Each direction: if neighbor is blocked, draw that side.
+            if y == 0 or grid[y - 1, x] != 0:                     # N
+                ax.plot([x, x + 1], [y, y], color=_LEM, lw=1.4,
+                        alpha=0.55, zorder=9.3)
+            if x + 1 == rw or grid[y, x + 1] != 0:                # E
+                ax.plot([x + 1, x + 1], [y, y + 1], color=_LEM,
+                        lw=1.4, alpha=0.55, zorder=9.3)
+            if y + 1 == rh or grid[y + 1, x] != 0:                # S
+                ax.plot([x, x + 1], [y + 1, y + 1], color=_LEM,
+                        lw=1.4, alpha=0.55, zorder=9.3)
+            if x == 0 or grid[y, x - 1] != 0:                     # W
+                ax.plot([x, x], [y, y + 1], color=_LEM, lw=1.4,
+                        alpha=0.55, zorder=9.3)
 
 
 def _draw_legend(ax, env):
@@ -636,7 +669,7 @@ def _draw_reward_details(ax, breakdown):
 def _draw_totals(ax, breakdown):
     """Right bottom: multiplicative reward breakdown + big TOTAL.
 
-    R = availability × privacy × light × efficiency + diversity
+    R = availability × privacy × light × efficiency + diversity + compactness
         (everything at FIXED y positions for visual stability across frames)
     """
     if breakdown is None:
@@ -652,15 +685,18 @@ def _draw_totals(ax, breakdown):
     eff     = breakdown.get("efficiency", 1.0)
     div     = breakdown.get("diversity", 0.0)
     n_cats  = breakdown.get("n_categories", 0)
+    comp    = breakdown.get("compactness", 0.0)
+    sc      = breakdown.get("shape_coef", 0.0)
 
     rows = [
-        ("Availability", f"+{A}",                     "#222"),
-        ("× privacy",    f"× {privacy:.2f}",          "#c44" if privacy < 1.0 else "#666"),
-        ("× light",      f"× {light:.2f}",            "#c44" if light   < 1.0 else "#666"),
-        ("× efficiency", f"× {eff:.2f}",              "#c44" if eff     < 1.0 else "#666"),
-        (f"+ diversity ({n_cats}/5)", f"+ {div:.1f}", "#2a9" if div > 0 else "#666"),
+        ("Availability", f"+{A}",                          "#222"),
+        ("× privacy",    f"× {privacy:.2f}",               "#c44" if privacy < 1.0 else "#666"),
+        ("× light",      f"× {light:.2f}",                 "#c44" if light   < 1.0 else "#666"),
+        ("× efficiency", f"× {eff:.2f}",                   "#c44" if eff     < 1.0 else "#666"),
+        (f"+ diversity ({n_cats}/5)",  f"+ {div:.1f}",     "#2a9" if div > 0  else "#666"),
+        (f"+ compactness (sc {sc:.1f})", f"+ {comp:.1f}",  "#2a9" if comp > 0 else "#666"),
     ]
-    y_positions = [0.86, 0.76, 0.66, 0.56, 0.46]
+    y_positions = [0.88, 0.78, 0.68, 0.58, 0.48, 0.38]
     for (k, v, c), y in zip(rows, y_positions):
         ax.text(0.02, y, k, fontsize=SZ_BODY, color="#333",
                 va="center", weight="bold", family=MONO)
@@ -668,10 +704,10 @@ def _draw_totals(ax, breakdown):
                 va="center", ha="right", weight="bold", family=MONO)
 
     # Divider between factors and TOTAL
-    ax.plot([0.0, 1.0], [0.36, 0.36], color="#bbb", lw=1.0,
+    ax.plot([0.0, 1.0], [0.30, 0.30], color="#bbb", lw=1.0,
             transform=ax.transAxes)
 
-    BASELINE = 0.14
+    BASELINE = 0.10
     ax.text(0.02, BASELINE, "TOTAL", fontsize=SZ_BODY + 2, color="#333",
             va="baseline", weight="bold", family=MONO)
     ax.text(1.0, BASELINE, f"{breakdown['total']:+}", fontsize=SZ_TOTAL,

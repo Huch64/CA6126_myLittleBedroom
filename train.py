@@ -169,6 +169,7 @@ class EpisodeBreakdownLogger(BaseCallback):
     HEADER = [
         "step", "ep_idx",
         "total", "availability", "diversity", "n_categories",
+        "compactness", "shape_coef",
         "privacy", "light", "efficiency",
         "privacy_loss", "light_loss", "waste_loss",
         "n_placed", "n_unique_cats",
@@ -203,6 +204,7 @@ class EpisodeBreakdownLogger(BaseCallback):
                 self.num_timesteps, self._ep_count,
                 bd["total"], bd["availability"],
                 bd.get("diversity", 0.0), bd.get("n_categories", 0),
+                bd.get("compactness", 0.0), bd.get("shape_coef", 0.0),
                 bd["privacy"], bd["light"], bd["efficiency"],
                 bd["privacy_loss"], bd["light_loss"], bd["waste_loss"],
                 len(cats), len(set(cats)),
@@ -219,6 +221,8 @@ class EpisodeBreakdownLogger(BaseCallback):
             self.logger.record_mean("custom/availability", bd["availability"])
             self.logger.record_mean("custom/diversity",    bd.get("diversity", 0.0))
             self.logger.record_mean("custom/n_categories", bd.get("n_categories", 0))
+            self.logger.record_mean("custom/compactness",  bd.get("compactness", 0.0))
+            self.logger.record_mean("custom/shape_coef",   bd.get("shape_coef", 0.0))
             self.logger.record_mean("custom/privacy",      bd["privacy"])
             self.logger.record_mean("custom/light",        bd["light"])
             self.logger.record_mean("custom/efficiency",   bd["efficiency"])

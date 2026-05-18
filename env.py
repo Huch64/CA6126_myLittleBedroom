@@ -46,20 +46,31 @@ N_ORI = 4
 
 # ── reward v3 (multiplicative, ratio-based, scale-invariant) ──────
 #
-# R = Availability × privacy × light × efficiency + diversity
+# R = Availability × privacy × light × efficiency + diversity + compactness
 #
 #   • Availability  = Σ (area_cells × CELL_REWARD)
 #                       — linear in area, single knob, no per-category factor.
 #                       Big furniture (bed) dominates naturally because it
 #                       occupies the most space.
-#   • diversity     = n_distinct_categories_placed (0..5)
-#                       — flat +1 per distinct category, max +5 when all
-#                       5 furniture types (bed/desk/wardrobe/cabinet/
-#                       nightstand) are placed. Added OUTSIDE the
-#                       privacy/light/efficiency product so the bonus is
-#                       never wiped out by a poor-quality placement.
-#                       Counter-balances the bed-dominates-area bias of
-#                       pure availability.
+#   • diversity     = n_distinct_categories_placed² / 5   ∈ {0.2, 0.8, 1.8, 3.2, 5.0}
+#                       — quadratic in distinct-category count: 1 cat→0.2,
+#                       2→0.8, 3→1.8, 4→3.2, 5→5.0. Max +5 when all 5
+#                       furniture types (bed/desk/wardrobe/cabinet/
+#                       nightstand) are placed. The 5-category jump is the
+#                       biggest reward (5.0 − 3.2 = +1.8) so agent strongly
+#                       prefers the full set. Added OUTSIDE the product so
+#                       the bonus is never wiped out by a poor-quality
+#                       placement. Counter-balances the bed-dominates-area
+#                       bias of pure availability.
+#   • compactness   = 5 × (1 − (perimeter/√area − 4) / 8)  ∈ [0, 5]
+#                       — shape coefficient of the remaining empty space.
+#                       Door swing is transparent (ignored — fixed at reset
+#                       and not controllable by agent, no point baking it
+#                       into the signal). Rewards layouts where furniture
+#                       clusters and the leftover space is a clean
+#                       rectangle. Penalizes scattered furniture, 1-cell
+#                       narrow strips, dead-end fingers, etc. Empty room
+#                       gives shape_coef ≈ 4 → compactness = 5.
 #   • privacy       = 1 − (1 − FACTOR_FLOOR) × exposure_ratio
 #                         exposure_ratio = angle_dev_to_pillow / (π/4)
 #                         linear remap to [FACTOR_FLOOR, 1] — no flat zone
@@ -79,7 +90,8 @@ N_ORI = 4
 #     R is overridden to 0 in _reward().
 
 CELL_REWARD = 0.05                  # reward per cell of furniture occupancy
-DIVERSITY_BONUS_PER_CAT = 1.0       # +1 per distinct category placed (max +5)
+# Diversity bonus: quadratic — n² / 5 → {0.2, 0.8, 1.8, 3.2, 5.0} for n=1..5.
+# Constant kept for back-compat but no longer used directly in formula.
 FACTOR_FLOOR = 0.3                  # soft-factor minimum (privacy / light range
                                     # linearly from FACTOR_FLOOR to 1.0 — no
                                     # flat zone, gradient always alive).
@@ -584,25 +596,33 @@ class MyLittleBedroom(gym.Env):
     def _reward(self) -> float:
         """Compute final reward (v3: multiplicative, ratio-based).
 
-        R = availability × privacy × light × efficiency + diversity
-          diversity  = n_distinct_categories_placed (0..5), +1 per category
-                       (added outside the product — never multiplied away)
-          privacy    = 1 − (1 − FACTOR_FLOOR) × exposure_ratio
-          light      = 1 − (1 − FACTOR_FLOOR) × window_ratio
-          efficiency = 1 − waste_ratio
+        R = availability × privacy × light × efficiency + diversity + compactness
+          diversity   = (n_distinct_categories_placed²) / 5    ∈ [0.2, 5.0]
+                        quadratic in n_cats: 1→0.2, 2→0.8, 3→1.8, 4→3.2,
+                        5→5.0. Biggest jump at full set (3.2→5.0 = +1.8).
+                        Added outside the product — never multiplied away.
+          compactness = 5 × (1 − (perim/√area − 4)/8) ∈ [0, 5]
+                        shape coefficient of remaining empty space
+                        (swing transparent; lower perim/√area = more
+                        integrated, less fragmented)
+          privacy     = 1 − (1 − FACTOR_FLOOR) × exposure_ratio
+          light       = 1 − (1 − FACTOR_FLOOR) × window_ratio
+          efficiency  = 1 − waste_ratio
 
         where every penalty is a continuous geometric measure:
             exposure_ratio  = exposed_weight / total_weight
-                              (per-cell weighted, pillow = 2× body, with
+                              (per-cell weighted, pillow = 10× body, with
                               Bresenham occlusion through wardrobes)
             window_ratio  = blocked_window_cells / window_strip_cells
             waste_ratio   = unreachable_cells   / total_empty_cells
 
         Properties:
             • All ratios ∈ [0, 1] → scale-invariant across room sizes
-            • All ratios = 0 → R = (availability + diversity), no discount
+            • All ratios = 0 → R = availability + diversity + compactness
             • diversity counterbalances area-weighted availability so the
               agent isn't biased toward bed-only layouts.
+            • compactness penalizes fragmented / scattered layouts where
+              empty space wraps around stranded furniture in the middle.
             • No weights, no τ — each (1 − ratio) is an independent discount.
         """
         rw, rh, pl = self.room_w, self.room_h, self.placed
@@ -629,11 +649,13 @@ class MyLittleBedroom(gym.Env):
             availability += val
             per_item.append((spec.name, round(val * 10) / 10))
 
-        # ── diversity bonus  (+1 per distinct category, max +5) ──
-        # Counterbalances bed-area dominance: full 5-category sets get +5.
+        # ── diversity bonus  (quadratic in n_categories, max +5) ──
+        # Counterbalances bed-area dominance. Quadratic scaling
+        # (1→0.2, 2→0.8, 3→1.8, 4→3.2, 5→5.0) so the 5-category jump is
+        # the biggest reward, but the gradient stays smooth.
         cats_placed = {CATALOG[p.fid].cat for p in pl}
         n_categories = len(cats_placed)
-        diversity = DIVERSITY_BONUS_PER_CAT * n_categories
+        diversity = (n_categories ** 2) / 5.0
 
         # ── privacy: per-cell weighted exposure with wardrobe occlusion ──
         # For each bed cell, accumulate a weight (pillow cells = 2.0, body
@@ -702,7 +724,10 @@ class MyLittleBedroom(gym.Env):
         light      = 1.0 - soft * window_ratio       # ∈ [FACTOR_FLOOR, 1]
         efficiency = 1.0 - waste_ratio                # ∈ [0, 1]
         product    = availability * privacy * light * efficiency
-        total      = round((product + diversity) * 10) / 10
+        # Compactness bonus: shape coefficient of the remaining empty space
+        # (lower perimeter/√area = more integrated, less fragmented).
+        compactness, shape_coef = _compactness(self.grid, rw, rh)
+        total      = round((product + diversity + compactness) * 10) / 10
 
         # ── semantic gate: a bedroom isn't a bedroom without a bed ──
         # Closes the truncation loophole: even if max_steps runs out before
@@ -722,6 +747,8 @@ class MyLittleBedroom(gym.Env):
             "availability":      round(availability * 10) / 10,
             "diversity":         round(diversity * 10) / 10,
             "n_categories":      n_categories,
+            "compactness":       round(compactness * 10) / 10,
+            "shape_coef":        round(shape_coef * 100) / 100,
             "total":             total,
             "per_item":          per_item,
             # v3 native factors (∈ [0, 1])
@@ -935,7 +962,13 @@ def _zone_ok(p: Placement, grid: np.ndarray, pl: list[Placement],
 
 
 def _flood(grid: np.ndarray, dp: int, rw: int, rh: int) -> set[tuple[int, int]]:
-    """3x3-brush passability -> BFS from door -> expand +-1 -> swept set."""
+    """3x3-brush passability -> BFS from door -> expand +-1 -> swept set.
+
+    Door swing cells are NOT blocked here — the door is open as the agent
+    enters, so swing area is physically walkable. (The mask separately
+    blocks placing furniture in swing cells.) Swing-as-non-empty is only
+    relevant to compactness, where it affects the empty-region perimeter.
+    """
     passable = np.zeros((rh, rw), dtype=bool)
     for y in range(rh):
         for x in range(rw):
@@ -978,6 +1011,36 @@ def _flood(grid: np.ndarray, dp: int, rw: int, rh: int) -> set[tuple[int, int]]:
                 if 0 <= x2 < rw and 0 <= y2 < rh and grid[y2, x2] == 0:
                     swept.add((x2, y2))
     return swept
+
+
+def _compactness(grid: np.ndarray, rw: int, rh: int) -> tuple[float, float]:
+    """Spatial integrity of the remaining empty space.
+
+    Computes the *shape coefficient* `perimeter / sqrt(area)` of the empty
+    region (door swing is treated as transparent — only walls and furniture
+    contribute to the non-empty side). Lower shape_coef = more compact /
+    less fragmented empty region.
+
+    Returns (compactness_bonus, shape_coef). bonus ∈ [0, 5]:
+        empty rectangle  : shape_coef ≈ 4    → bonus ≈ 5
+        fragmented layout: shape_coef ≥ 12   → bonus = 0
+    """
+    perimeter = 0
+    area = 0
+    for y in range(rh):
+        for x in range(rw):
+            if grid[y, x] != 0:
+                continue
+            area += 1
+            for dx, dy in ((0, -1), (1, 0), (0, 1), (-1, 0)):
+                nx, ny = x + dx, y + dy
+                if not (0 <= nx < rw and 0 <= ny < rh) or grid[ny, nx] != 0:
+                    perimeter += 1
+    if area == 0:
+        return 0.0, 0.0
+    shape_coef = perimeter / math.sqrt(area)
+    bonus = max(0.0, 5.0 * (1.0 - (shape_coef - 4.0) / 8.0))
+    return bonus, shape_coef
 
 
 def _door_center(wall: str, dp: int, rw: int, rh: int) -> tuple[float, float, float]:
