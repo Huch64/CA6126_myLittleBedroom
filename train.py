@@ -277,6 +277,8 @@ class LiveProgressCallback(BaseCallback):
                 "priv":  bd["privacy"],
                 "light": bd["light"],
                 "eff":   bd["efficiency"],
+                "div":   bd.get("diversity", 0.0),
+                "comp":  bd.get("compactness", 0.0),
                 "n_pl":  len(cats),
                 "bed":   1 if "bed" in cats else 0,
             })
@@ -301,6 +303,7 @@ class LiveProgressCallback(BaseCallback):
                       f"ep={self._ep_count:>5}  "
                       f"total={mean_total:.2f} (max {max_total:.1f}, best {self._best_seen:.1f})  "
                       f"priv={avg('priv'):.2f}  light={avg('light'):.2f}  eff={avg('eff'):.2f}  "
+                      f"div={avg('div'):.1f}  comp={avg('comp'):.1f}  "
                       f"n_pl={avg('n_pl'):.1f}  bed={avg('bed'):.0%}"
                       f"{trend}",
                       flush=True)
@@ -329,6 +332,8 @@ class MilestoneCallback(BaseCallback):
             self._recent.append({
                 "total": bd["total"], "priv": bd["privacy"],
                 "light": bd["light"], "eff": bd["efficiency"],
+                "div":  bd.get("diversity", 0.0),
+                "comp": bd.get("compactness", 0.0),
                 "n_pl": len(cats),
                 "bed":  1 if "bed" in cats else 0,
             })
@@ -346,6 +351,7 @@ class MilestoneCallback(BaseCallback):
                 a = lambda k: sum(r[k] for r in w) / n
                 summary = (f"total={a('total'):.2f}  priv={a('priv'):.2f}  "
                            f"light={a('light'):.2f}  eff={a('eff'):.2f}  "
+                           f"div={a('div'):.1f}  comp={a('comp'):.1f}  "
                            f"bed={a('bed'):.0%}")
             else:
                 summary = "(no episodes yet)"
