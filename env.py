@@ -213,11 +213,22 @@ class MyLittleBedroom(gym.Env):
         strict_mask: bool = True,
         render_mode: Optional[str] = None,
         seed: Optional[int] = None,
+        reward_style: str = "hybrid",
     ):
         super().__init__()
         self.max_steps = max_steps
         self.strict_mask = strict_mask
         self.render_mode = render_mode
+        # Reward composition style — controls how the 6 reward components
+        # (A, privacy, light, efficiency, diversity, compactness) are
+        # combined into the final scalar reward. Three structural choices:
+        #   "hybrid"         : A × p × l × e + diversity + compactness  (v5 default)
+        #   "additive"       : A + 5p + 5l + 5e + diversity + compactness
+        #   "multiplicative" : A × p × l × e × (1+div/5) × (1+comp/5)
+        # Used for reward-construction ablation experiments.
+        assert reward_style in ("hybrid", "additive", "multiplicative"), \
+            f"unknown reward_style: {reward_style}"
+        self.reward_style = reward_style
 
         self.action_space = spaces.Discrete(N_ACTIONS)
         # Observation = flat[(3 occupancy/door/window channels) ++ 5 cat-placed flags]
@@ -727,7 +738,43 @@ class MyLittleBedroom(gym.Env):
         # Compactness bonus: shape coefficient of the remaining empty space
         # (lower perimeter/√area = more integrated, less fragmented).
         compactness, shape_coef = _compactness(self.grid, rw, rh)
-        total      = round((product + diversity + compactness) * 10) / 10
+
+        # ── Reward composition (branch by reward_style) ──
+        # Each style is a STRUCTURAL alternative for combining the 6
+        # components. Each style is normalized so its theoretical max
+        # equals hybrid's max (HYBRID_MAX), making the 3 curves comparable
+        # at the upper bound (not necessarily across the whole distribution
+        # — that's an inherent operator difference).
+        #
+        # Theoretical max assumes a perfect layout:
+        #   A=16.3 (Bed 1.8 + Desk XL + Wardrobe XXL + Cabinet XL + 2 NS A)
+        #   p=l=e=1, diversity=5, compactness=5
+        HYBRID_MAX = 16.3 + 5 + 5                   # 26.3
+        ADDITIVE_MAX = 16.3 + 5 * 3 + 5 + 5         # 41.3
+        MULTIPLICATIVE_MAX = 16.3 * 1 * 1 * 1 * 2 * 2   # 65.2
+
+        if self.reward_style == "additive":
+            # Pure additive: every component contributes independently.
+            # Soft factors × 5 to be comparable in magnitude with A and bonuses.
+            raw_total = (availability
+                         + 5.0 * privacy
+                         + 5.0 * light
+                         + 5.0 * efficiency
+                         + diversity
+                         + compactness)
+            raw_total = raw_total / ADDITIVE_MAX * HYBRID_MAX
+        elif self.reward_style == "multiplicative":
+            # Pure multiplicative: bonuses become multipliers in [1, 2].
+            # Diversity / compactness are AND-style — bigger amplification.
+            raw_total = (availability * privacy * light * efficiency
+                         * (1.0 + diversity / 5.0)
+                         * (1.0 + compactness / 5.0))
+            raw_total = raw_total / MULTIPLICATIVE_MAX * HYBRID_MAX
+        else:  # "hybrid" (default = v5 baseline)
+            # Multiplicative core + additive bonuses. No normalization
+            # needed — this is the reference scale.
+            raw_total = product + diversity + compactness
+        total = round(raw_total * 10) / 10
 
         # ── semantic gate: a bedroom isn't a bedroom without a bed ──
         # Closes the truncation loophole: even if max_steps runs out before

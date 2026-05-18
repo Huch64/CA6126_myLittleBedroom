@@ -131,14 +131,16 @@ class CompletionBonusWrapper(gym.Wrapper):
 
 
 def make_env(seed: int | None = None, max_steps: int = 8,
-             placement_bonus: float = 0.0):
+             placement_bonus: float = 0.0, reward_style: str = "hybrid"):
     """Factory: MyLittleBedroom → ActionMasker → [CompletionBonusWrapper] → Monitor.
 
     Monitor is outermost so it sees the *shaped* reward used for training.
     ActionMasker exposes .action_masks() which MaskablePPO calls each step.
+    reward_style ∈ {hybrid, additive, multiplicative} selects the reward
+    composition (see env.py for formulas).
     """
     def _init():
-        env = MyLittleBedroom(seed=seed, max_steps=max_steps)
+        env = MyLittleBedroom(seed=seed, max_steps=max_steps, reward_style=reward_style)
         env = ActionMasker(env, _mask_fn)
         if placement_bonus > 0:
             env = CompletionBonusWrapper(env, bonus=placement_bonus)
@@ -389,6 +391,9 @@ def main():
                         "(0 = disabled). Files saved as model_<step>_steps.zip")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--max-steps", type=int, default=8)
+    p.add_argument("--reward-style", default="hybrid",
+                   choices=["hybrid", "additive", "multiplicative"],
+                   help="reward composition for ablation (hybrid=v5 default)")
     args = p.parse_args()
 
     run_name = args.name or f"ppo_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -417,16 +422,17 @@ def main():
     (run_dir / "config.json").write_text(json.dumps(cfg, indent=2))
 
     # ── envs ─────────────────────────────────────────────
-    env_fns = [make_env(args.seed + i, args.max_steps, args.placement_bonus)
+    env_fns = [make_env(args.seed + i, args.max_steps, args.placement_bonus,
+                        args.reward_style)
                for i in range(args.n_envs)]
     if args.n_envs == 1:
         vec_env = DummyVecEnv(env_fns)
     else:
         vec_env = SubprocVecEnv(env_fns)
-    # Eval env: same bonus so eval reward matches training reward; use a
+    # Eval env: same reward_style so eval reward matches training reward;
     # disjoint seed so eval distribution isn't a subset of training.
     eval_env = DummyVecEnv([make_env(args.seed + 100_000, args.max_steps,
-                                     args.placement_bonus)])
+                                     args.placement_bonus, args.reward_style)])
 
     # ── model ────────────────────────────────────────────
     # MLP backbone widened to 128-128 (was 64-64). Factored output head saves
