@@ -10,9 +10,16 @@ MDP recap (see my_little_bedroom_spec.md):
   - Action: Discrete(41185) = (fid, x, y, ori) flattened + DONE.
             DONE is mask-blocked until a bed has been placed.
             Step 0 is mask-restricted to bed actions only (bed-first).
-  - Reward: 0 every step except final, where
-        R = Availability × privacy × light × efficiency
-    with each factor a (1 − ratio) discount in [0, 1].
+  - Reward: 0 every step except final. Six components are computed each
+    episode — Availability, privacy, light, efficiency, diversity,
+    compactness — and combined according to ``reward_style``:
+        "hybrid"         (default, v5):  A × p × l × e + diversity + compactness
+        "additive"       : A + 5p + 5l + 5e + diversity + compactness   (scaled)
+        "multiplicative" : A × p × l × e × (1+div/5) × (1+comp/5)       (scaled)
+    additive / multiplicative are renormalized so their theoretical max
+    matches hybrid's, making the 3 curves comparable at the top end.
+    Each soft factor (privacy / light / efficiency) is a (1 − ratio)
+    discount in [FACTOR_FLOOR, 1] (efficiency has no floor).
     Semantic gate: if no bed at episode end, R = 0
     (a bedroom isn't a bedroom without a bed).
 
@@ -44,9 +51,12 @@ ROOM_H_RANGE = (18, 22)
 WINDOW_WALLS = ("top", "left", "right")
 N_ORI = 4
 
-# ── reward v3 (multiplicative, ratio-based, scale-invariant) ──────
+# ── reward v5 (hybrid: multiplicative core + additive bonuses, ratio-based) ──
 #
-# R = Availability × privacy × light × efficiency + diversity + compactness
+# Default formula (reward_style="hybrid"):
+#   R = Availability × privacy × light × efficiency + diversity + compactness
+# Two alternative styles ("additive", "multiplicative") are selectable via
+# the reward_style ctor arg for ablation; see MyLittleBedroom.__init__.
 #
 #   • Availability  = Σ (area_cells × CELL_REWARD)
 #                       — linear in area, single knob, no per-category factor.
@@ -90,8 +100,8 @@ N_ORI = 4
 #     R is overridden to 0 in _reward().
 
 CELL_REWARD = 0.05                  # reward per cell of furniture occupancy
-# Diversity bonus: quadratic — n² / 5 → {0.2, 0.8, 1.8, 3.2, 5.0} for n=1..5.
-# Constant kept for back-compat but no longer used directly in formula.
+# Diversity bonus is computed inline in _reward() as (n_categories ** 2) / 5,
+# producing {0.2, 0.8, 1.8, 3.2, 5.0} for n=1..5 — no module-level constant.
 FACTOR_FLOOR = 0.3                  # soft-factor minimum (privacy / light range
                                     # linearly from FACTOR_FLOOR to 1.0 — no
                                     # flat zone, gradient always alive).
@@ -605,8 +615,9 @@ class MyLittleBedroom(gym.Env):
         return True
 
     def _reward(self) -> float:
-        """Compute final reward (v3: multiplicative, ratio-based).
+        """Compute final reward (v5 hybrid by default; see reward_style).
 
+        Default (reward_style="hybrid"):
         R = availability × privacy × light × efficiency + diversity + compactness
           diversity   = (n_distinct_categories_placed²) / 5    ∈ [0.2, 5.0]
                         quadratic in n_cats: 1→0.2, 2→0.8, 3→1.8, 4→3.2,
@@ -798,7 +809,7 @@ class MyLittleBedroom(gym.Env):
             "shape_coef":        round(shape_coef * 100) / 100,
             "total":             total,
             "per_item":          per_item,
-            # v3 native factors (∈ [0, 1])
+            # Soft-discount factors (∈ [FACTOR_FLOOR, 1] for privacy/light; [0, 1] for efficiency)
             "privacy":           round(privacy    * 1000) / 1000,
             "light":             round(light      * 1000) / 1000,
             "efficiency":        round(efficiency * 1000) / 1000,

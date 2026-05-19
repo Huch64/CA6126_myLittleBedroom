@@ -44,7 +44,22 @@ def random_policy(seed: int):
 
 def model_policy(model_path: str):
     from sb3_contrib import MaskablePPO   # lazy
-    model = MaskablePPO.load(model_path)
+    # Models trained by train.py use the custom FactoredMaskablePolicy.
+    # Importing it before load() registers the class so the pickled
+    # policy_class reference resolves cleanly.
+    from train import FactoredMaskablePolicy
+    # The pickled blobs (policy_class + lr_schedule + clip_range) may not
+    # unpickle cleanly across Python versions (this repo's model was trained
+    # on 3.10 + Windows, may be loaded on 3.13 + macOS). Inject fresh
+    # objects via custom_objects so SB3 skips deserialization for these
+    # entries — inference doesn't use lr_schedule / clip_range anyway.
+    custom_objects = {
+        "policy_class":  FactoredMaskablePolicy,
+        "learning_rate": 0.0,
+        "lr_schedule":   lambda _: 0.0,
+        "clip_range":    lambda _: 0.0,
+    }
+    model = MaskablePPO.load(model_path, custom_objects=custom_objects)
 
     def step(obs, env):
         mask = env.action_masks()
@@ -283,7 +298,7 @@ def _draw_zones(ax, p, c_rgb):
                                alpha=0.32, zorder=1))
 
 
-# ── typography (only 4 sizes, mono + serif title) ────────────────
+# ── typography (5 sizes, mono body + serif title/total) ──────────
 MONO = "DejaVu Sans Mono"
 SERIF = "serif"
 SZ_BRAND = 18    # brand title
@@ -417,7 +432,8 @@ def _draw_env_block(ax, env):
 
 def _draw_room(ax, env, breakdown):
     """The main room view — walls, door, window, swing, furniture + overlays
-    (cone / flood-fill / exposed cells) on the final frame."""
+    (cone / flood-fill / exposed cells / diversity stroke / compactness
+    perimeter) on the final frame."""
     from matplotlib.patches import Rectangle
 
     rw, rh = env.room_w, env.room_h
@@ -667,10 +683,14 @@ def _draw_reward_details(ax, breakdown):
 
 
 def _draw_totals(ax, breakdown):
-    """Right bottom: multiplicative reward breakdown + big TOTAL.
+    """Right bottom: hybrid (v5) reward breakdown + big TOTAL.
 
     R = availability × privacy × light × efficiency + diversity + compactness
         (everything at FIXED y positions for visual stability across frames)
+
+    Note: env supports three reward styles (hybrid / additive / multiplicative);
+    this panel always renders the hybrid formula since render.py instantiates
+    MyLittleBedroom with the default reward_style="hybrid".
     """
     if breakdown is None:
         return
