@@ -22,7 +22,9 @@
 > Enforced by both (a) action mask blocking DONE until bed exists, and
 > (b) reward gate returning 0 at episode end if no bed.
 >
-> Both `env.py` and the interactive HTML preview implement this v3 reward.
+> Both `env.py` and the interactive HTML preview implement this v5 hybrid reward
+> (`env.py` also offers additive / multiplicative composition variants via
+> `reward_style` for the ablation).
 > Every penalty is a fraction of its relevant resource in [0, 1], so each
 > `(1 − ratio)` is an independent "discount factor" in [0, 1] — zero
 > weights, zero τ, every term has one physical meaning. Earlier additive

@@ -67,9 +67,27 @@ def _wardrobe_wall_dist(env) -> float:
     return float(min(min(x, y, rw - 1 - x, rh - 1 - y) for x, y in cells))
 
 
+def _load_model(model_path: str) -> MaskablePPO:
+    """Load a MaskablePPO trained by train.py.
+
+    Importing FactoredMaskablePolicy registers the custom policy class, and the
+    custom_objects overrides skip the cloudpickle blobs (policy_class /
+    lr_schedule / clip_range) that don't deserialize across Python versions —
+    this repo's models were trained on 3.10/Windows but may be loaded on
+    3.13/macOS. None of those objects are needed for inference.
+    """
+    from train import FactoredMaskablePolicy
+    return MaskablePPO.load(model_path, custom_objects={
+        "policy_class":  FactoredMaskablePolicy,
+        "learning_rate": 0.0,
+        "lr_schedule":   lambda _: 0.0,
+        "clip_range":    lambda _: 0.0,
+    })
+
+
 def evaluate_agent(model_path: str, n_eps: int, seed: int = 12345) -> list[dict]:
     """Run model for n_eps episodes in full v5 env; return per-ep metric dicts."""
-    model = MaskablePPO.load(model_path)
+    model = _load_model(model_path)
     env = MyLittleBedroom(seed=seed, reward_style="hybrid")   # unified eval
 
     out = []

@@ -51,13 +51,17 @@ tensorboard --logdir runs/
 |---|---|---|
 | 🎮 `my_little_bedroom.html` | Interactive preview — the visual + reward reference | ✅ |
 | 📄 `my_little_bedroom_spec.md` | Full MDP / reward spec | ✅ |
-| 🏗️ `env.py` | Gymnasium env (v3 reward), action mask, RGB render | ✅ |
+| 🏗️ `env.py` | Gymnasium env (v5 hybrid reward + additive/multiplicative styles), action mask, RGB render | ✅ |
 | 🧪 `sanity_check.py` | 3 smoke tests (shapes, scripted episode, random rollout) | ✅ |
 | ✅ `verify.py` | Hand-crafted cases for cross-checking against the HTML | ✅ |
 | 🔬 `reward_audit.py` | Profile reward distribution before training (continuity, DONE-trap gap, per-component health) | ✅ |
 | 🚂 `train.py` | MaskablePPO training + CSV/TB logging + best-model saving | ✅ |
 | 🎬 `render.py` | Record agent playing to mp4 (random or trained policy) | ✅ |
 | 📈 `plot_training.py` | Generate report figures from `runs/<name>/` logs | ✅ |
+| 🧮 `evaluate.py` | Unified eval of trained agents on a common hybrid yardstick → summary CSV | ✅ |
+| 🕸️ `plot_radar.py` | Radar chart comparing reward-style agents on behavior metrics | ✅ |
+| 📓 `analysis_plots.ipynb` | All report figures: training curve, behavior evolution, occupancy/territory heatmaps, 3-style ablation | ✅ |
+| 🔁 `collect_*.py` | Cached behavior-data collectors backing the notebook (evolution / occupancy / styles / fixed-geometry) | ✅ |
 | 👥 `TEAMMATE.md` | Quick-start for collaborators — what to run, what to monitor, what to tune | ✅ |
 | 📊 `report.pptx` | Slides (≤ 20 pages) | ⬜ TODO |
 
@@ -82,10 +86,10 @@ Generated at runtime (gitignored):
 
 ## 🏋️ Training Details
 
-- **Algorithm**: MaskablePPO (`sb3-contrib`) — vanilla PPO + action masking so the agent only samples from the ~16 K valid placements at each step.
-- **Policy**: `MlpPolicy`, observation flattened from `(3, 22, 26)` → 1 716 features.
-- **Parallel envs**: 8 (`SubprocVecEnv`), each samples a fresh random room every reset.
-- **Total steps**: 500 K (≈ 25–40 min on CPU).
+- **Algorithm**: MaskablePPO (`sb3-contrib`) — vanilla PPO + action masking. The feasible-action set is small (mean ≈ 575 of 41 185 actions per step, peaking ~1.5 K early and dropping to single digits late).
+- **Policy**: `FactoredMaskablePolicy` — MLP backbone (128-128) + factored action heads (fid/x/y/ori/done summed into the 41 185 joint logit). Observation is `(3, 22, 26)` grid + 5 category-placed flags, flattened to 1 721 features.
+- **Parallel envs**: 8 for pilots, 20 for the final 2 M runs (`SubprocVecEnv`), each samples a fresh random room every reset.
+- **Total steps**: pilots 100–500 K; final runs 2 M (≈ 80 min on CPU).
 - **Eval**: every 10 K steps, 20 deterministic episodes; best model auto-saved.
 
 Logs written per run under `runs/<run_name>/`:
