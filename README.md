@@ -1,19 +1,70 @@
-# 🏠 My Little Bedroom — CA6126 RL Final Project
+# 🏠 My Little Bedroom
 
-> A MaskablePPO agent learns to furnish a randomized bedroom.
-> Reward: `R = Availability × privacy × light × efficiency + diversity + compactness`
-> &nbsp;&nbsp;privacy / light: linear remap to [0.3, 1]; efficiency: full [0, 1] — see [spec](my_little_bedroom_spec.md)
-> &nbsp;&nbsp;diversity: `n_categories² / 5` (quadratic: 0.2 → 5.0)
-> &nbsp;&nbsp;compactness: shape coefficient of remaining empty space, `0..5`
-> &nbsp;&nbsp;Semantic gate: `R = 0` if no bed (bedroom must have a bed).
+> Teaching a reinforcement-learning agent to **furnish a bedroom** — drop in the bed, desk, wardrobe and nightstand so the room actually feels livable: easy to move around, the bed kept private from the door, the window left unblocked, space used well. We never tell it *how* to arrange things — only score the finished room. Along the way we found that *how you write the reward* — adding terms vs. multiplying them — is itself a design language.
 
-Full MDP spec: [`my_little_bedroom_spec.md`](my_little_bedroom_spec.md)
-Interactive reward reference (open in a browser): [`my_little_bedroom.html`](my_little_bedroom.html)
-Assignment brief: [`CA6126 final project.pdf`](CA6126%20final%20project.pdf)
+<p align="center">
+  <img src="assets/trained.gif" width="640" alt="Trained agent furnishing a randomized bedroom" />
+</p>
+
+<p align="center"><i>The trained agent furnishing a brand-new random room. Nothing is hard-coded to go against a wall or near the window — keeping the bed private from the door, the window unblocked, and the floor walkable are all habits it picks up from the reward alone.</i></p>
 
 ---
 
-## 🚀 Quick Start
+## What is this?
+
+Furnishing a room is an everyday problem with no single "correct" answer — you're juggling function, comfort, and efficiency all at once. We turn it into a game an RL agent can play:
+
+Every episode the agent gets an **empty room with a random shape, door and window**, plus a catalog of furniture (18 pieces, 5 categories). One piece at a time it chooses *what* to put down, *where*, and *which way it faces* — out of ~41,000 possible moves each step. When it calls it done, the finished room gets a **single score** built from six things: usable furniture, privacy, light, floor reachability, variety, and tidiness.
+
+No instructions, no example layouts — just that one score, and a fresh room every time so it can't memorize. The fun question is whether it can pick up real interior-design sense on its own.
+
+It can. 👇
+
+---
+
+## What the agent learned
+
+After training, we let it furnish hundreds of fresh rooms and looked at *where* it likes to put each kind of furniture. Each type settled into its own spot — matching the same common-sense rules a person would use, even though nobody ever told it any of them:
+
+![Where the agent places each furniture type](assets/spatial_grammar.png)
+
+- 🛏 **Bed** → tucked against the side walls (keeps the floor open, hides it from the door)
+- 👔 **Wardrobe / Desk** → back wall and corners
+- 🛋 **Nightstand** → fills the leftover gaps in a consistent spot, not scattered at random
+
+Because the room changes every episode, it can only do this by *reading the room's shape* — the strategy is positional, not memorized.
+
+---
+
+## Does it work?
+
+Yes — the trained agent scores about **2.4× better than random** (16.5 vs. 6.9), and learns steadily without collapsing. Crucially the eval curve (unseen rooms) tracks the training curve, so it's **generalizing across random rooms, not memorizing** them:
+
+![Learning curve and training health](assets/training_curve_hybrid.png)
+
+<sub>Final run: MaskablePPO, 2M steps, 20 parallel rooms, ~78 min on CPU. Most of the gain lands in the first ~750K steps.</sub>
+
+---
+
+## The interesting bit: reward composition as a design language
+
+While tuning the reward we noticed something: the **six ingredients can stay exactly the same, but the way you combine them changes everything the agent does.** We trained the same agent under three recipes:
+
+| Recipe | Formula | What the agent does |
+|---|---|---|
+| **Additive** | `A + 5p + 5l + 5e + div + comp` | **Games it.** Crams in furniture to farm area points, blocks the window, leaves the bed exposed to the door. High score, unlivable room. |
+| **Multiplicative** | `A · p · l · e · div · comp` | **Too strict.** Any single weak term zeroes the whole score, so early mistakes give no gradient — training stalls for the first ~140 min. |
+| **Hybrid** *(ours)* | `A · p · l · e + div + comp` | **Balanced.** The `×` part sets non-negotiable quality floors, the `+` part adds bonuses freely. Converges in ~76 min and places the most furniture. |
+
+The pattern: **`×` behaves like a gate** (must-haves — if any factor is poor, the score drops), while **`+` behaves like negotiation** (a weak dimension can be traded off against a strong one). Choosing between them isn't a technical detail — it's a design decision about *what kind of room you want*.
+
+Compared on actual behavior, the additive agent spikes coverage and compactness but craters privacy and light, while the hybrid agent stays balanced across every axis:
+
+![Behavioral comparison of the three reward styles](assets/radar_profile.png)
+
+---
+
+## Quick Start
 
 ```bash
 # 1. create env + install deps (Python 3.10+ recommended)
@@ -26,10 +77,10 @@ python sanity_check.py
 # 3. spot-check that env reward matches the HTML preview (~5 s)
 python verify.py                # prints HTML setup steps + env's A/D/W
 
-# 4. record a random-agent video (random.mp4 is required for submission)
+# 4. record a random-agent baseline video
 python render.py --episodes 2 --seed 0 --save videos/random.mp4
 
-# 5. train MaskablePPO (default 500K steps, ~25–40 min on CPU)
+# 5. train the agent (default 500K steps, ~25–40 min on CPU)
 python train.py
 
 # 6. record the trained agent on the SAME seeds as random
@@ -38,127 +89,76 @@ python render.py --episodes 5 --seed 0 \
     --save videos/trained.mp4
 ```
 
-While training, watch curves live:
+Watch the training curves live:
 ```bash
 tensorboard --logdir runs/
 ```
 
 ---
 
-## 📁 Files
+## How it works
 
-| File | Purpose | Status |
-|---|---|---|
-| 🎮 `my_little_bedroom.html` | Interactive preview — the visual + reward reference | ✅ |
-| 📄 `my_little_bedroom_spec.md` | Full MDP / reward spec | ✅ |
-| 🏗️ `env.py` | Gymnasium env (v5 hybrid reward + additive/multiplicative styles), action mask, RGB render | ✅ |
-| 🧪 `sanity_check.py` | 3 smoke tests (shapes, scripted episode, random rollout) | ✅ |
-| ✅ `verify.py` | Hand-crafted cases for cross-checking against the HTML | ✅ |
-| 🔬 `reward_audit.py` | Profile reward distribution before training (continuity, DONE-trap gap, per-component health) | ✅ |
-| 🚂 `train.py` | MaskablePPO training + CSV/TB logging + best-model saving | ✅ |
-| 🎬 `render.py` | Record agent playing to mp4 (random or trained policy) | ✅ |
-| 📈 `plot_training.py` | Generate report figures from `runs/<name>/` logs | ✅ |
-| 🧮 `evaluate.py` | Unified eval of trained agents on a common hybrid yardstick → summary CSV | ✅ |
-| 🕸️ `plot_radar.py` | Radar chart comparing reward-style agents on behavior metrics | ✅ |
-| 📓 `analysis_plots.ipynb` | All report figures: training curve, behavior evolution, occupancy/territory heatmaps, 3-style ablation | ✅ |
-| 🔁 `collect_*.py` | Cached behavior-data collectors backing the notebook (evolution / occupancy / styles / fixed-geometry) | ✅ |
-| 👥 `TEAMMATE.md` | Quick-start for collaborators — what to run, what to monitor, what to tune | ✅ |
-| 📊 `report.pptx` | Slides (≤ 20 pages) | ⬜ TODO |
-
-Generated at runtime (gitignored):
-- `runs/<run_name>/` — training logs (`progress.csv`, `episodes.csv`, `evaluations.npz`, TB events, `final.zip`, `best/best_model.zip`)
-- `videos/*.mp4` — recorded agent playthroughs
+- **The game (MDP)**: state = the room grid + everything placed so far (state space ≈ 10¹¹–10¹², far past anything tabular). Action = `(piece × cell × orientation)` plus `DONE` → **41,185** discrete actions. Bed must go first; max 8 steps.
+- **Algorithm**: MaskablePPO (`sb3-contrib`) — PPO with **action masking**, so the agent only ever considers *legal* placements (thousands early, single digits as the room fills). Hard constraints live in the mask; soft preferences live in the reward — which keeps the learning signal clean.
+- **Network** (~483K params): the room (a `26×22` grid × 3 channels + 5 "placed" flags = 1721-dim) goes through a small MLP, then a **factored policy head** predicts piece / x / y / orientation / done separately and combines them — instead of one giant 41,185-way layer.
+- **Reward**: `R = Availability × privacy × light × efficiency + diversity + compactness`, with one hard rule — **no bed, no reward** (a bedroom needs a bed). Full details in [`my_little_bedroom_spec.md`](my_little_bedroom_spec.md); there's also an interactive version you can open in a browser: [`my_little_bedroom.html`](my_little_bedroom.html).
 
 ---
 
-## 🧭 Workflow
+## What's next
 
-```
-┌────────────┐    ┌────────────┐    ┌──────────────┐    ┌──────────────┐
-│ verify.py  │ →  │ sanity_    │ →  │  train.py    │ →  │  render.py   │
-│ vs HTML    │    │ check.py   │    │  → runs/...  │    │  → videos/.. │
-└────────────┘    └────────────┘    └──────────────┘    └──────────────┘
-   reward            env API           policy +              showcase
-   correctness       sanity            logs + ckpt           videos
-```
+- **Hand-tuned constants.** The reward weights and floors were set by hand (guided by `reward_audit.py`, below) — learning or auto-tuning them is open.
+- **The grid is flat.** Spatial relations like "facing", "adjacent to", "blocking" are only implicit. A **graph-based representation** (cf. *House-GAN++*, Nauata et al. 2021) could make them explicit as edges — bridging reward-driven RL with relation-driven layout generation.
 
 ---
 
-## 🏋️ Training Details
+## What's in the repo
 
-- **Algorithm**: MaskablePPO (`sb3-contrib`) — vanilla PPO + action masking. The feasible-action set is small (mean ≈ 575 of 41 185 actions per step, peaking ~1.5 K early and dropping to single digits late).
-- **Policy**: `FactoredMaskablePolicy` — MLP backbone (128-128) + factored action heads (fid/x/y/ori/done summed into the 41 185 joint logit). Observation is `(3, 22, 26)` grid + 5 category-placed flags, flattened to 1 721 features.
-- **Parallel envs**: 8 for pilots, 20 for the final 2 M runs (`SubprocVecEnv`), each samples a fresh random room every reset.
-- **Total steps**: pilots 100–500 K; final runs 2 M (≈ 80 min on CPU).
-- **Eval**: every 10 K steps, 20 deterministic episodes; best model auto-saved.
+| File | What it does |
+|---|---|
+| 🎮 `my_little_bedroom.html` | Interactive preview — the visual + reward reference |
+| 📄 `my_little_bedroom_spec.md` | Full rules: states, actions, reward |
+| 🏗️ `env.py` | The bedroom environment (Gymnasium), action mask, rendering |
+| 🧪 `sanity_check.py` | Quick smoke tests |
+| ✅ `verify.py` | Cross-checks the reward against the HTML preview |
+| 🔬 `reward_audit.py` | Profiles the reward landscape *before* training |
+| 🚂 `train.py` | Trains the agent + logging + best-model saving |
+| 🎬 `render.py` | Records the agent playing to an mp4 |
+| 📈 `plot_training.py` | Makes the training-curve figures |
+| 🧮 `evaluate.py` | Scores trained agents on a common yardstick |
+| 🕸️ `plot_radar.py` | The behavior radar chart |
+| 📓 `analysis_plots.ipynb` | All the analysis figures in one place |
+| 🔁 `collect_*.py` | Data collectors that feed the notebook |
 
-Logs written per run under `runs/<run_name>/`:
+Generated while running (not committed): `runs/` (training logs + saved models) and `videos/` (recorded playthroughs).
+
+---
+
+## A bit more detail
+
+**Per-run logs** land in `runs/<run_name>/`:
 
 | File | What's in it |
 |---|---|
 | `config.json` | Hyperparameters + start time |
-| `progress.csv` | SB3 internals: ep_rew_mean, value/policy loss, KL, lr, entropy, … |
-| `episodes.csv` | One row per training episode: A/D/W, room config, items placed |
-| `evaluations.npz` | Eval rewards over time (per-seed reward across eval episodes) |
+| `progress.csv` | Training internals: reward, losses, KL, lr, entropy, … |
+| `episodes.csv` | One row per episode: scores, room config, items placed |
+| `evaluations.npz` | Eval rewards over time |
 | `events.out.tfevents.*` | TensorBoard events |
-| `final.zip`, `best/best_model.zip` | Policies |
+| `final.zip`, `best/best_model.zip` | Saved policies |
 
----
-
-## 👥 Team Workflow
-
-- 🌿 Main branch stays runnable — feature work goes on branches (`<initial>/<topic>`, e.g. `hcw/plot-training`).
-- 🧪 Before pushing: `python sanity_check.py` and (if env changed) `python verify.py`.
-- 🚫 Don't commit `runs/`, `checkpoints/`, `videos/`, or `*.zip` — already gitignored.
-- 📝 PR description: what changed + how you verified it (1-paragraph).
-
-```bash
-git checkout -b hcw/plot-training
-# edit
-python sanity_check.py            # quick check
-git add plot_training.py
-git commit -m "feat: training-curve + reward-breakdown plots"
-git push -u origin hcw/plot-training
-# open PR
-```
-
----
-
-## 📤 Submission Checklist
-
-Per assignment brief (PDF):
-
-- [ ] 📊 Report (PPT / PDF, ≤ 20 pages) — **must include group members on title page**
-- [ ] 🎬 `videos/random.mp4` — random agent (clearly bad)
-- [ ] 🎬 `videos/trained.mp4` — trained agent (clearly better)
-- [ ] 💾 Source code zip — **without** `runs/`, `checkpoints/`, `videos/` (they're large)
-
-Report sections expected by the rubric:
-- Title page + group members
-- RL game description and formulation (MDP states / actions / transition / reward + state-space size estimate)
-- RL solution (algorithm choice, tricks like masking & reward shaping, training-curve plot, eval results)
-
-Grading: 20 pts total — 5 novelty / 2 formalism / 3 env / 5 showcase / 5 training process.
-
----
-
-## 🧪 Reward audit before training
-
-`reward_audit.py` profiles the reward landscape under random / greedy / edge-greedy / DONE policies + a continuity sweep, **before** committing to a 1-3 h training run. Plots the distribution, per-component contributions, and DONE-trap gap. This is how we converged on the v3 reward (multiplicative + ratio-based) — see the iteration history in the spec.
+**Reward audit** — we profile the scoring function in seconds *before* committing to a multi-hour run, to catch traps early. A healthy reward looks like:
 
 ```bash
 python reward_audit.py --n 2000 --save plots/audit.png
 ```
+- score distribution is smooth, not clumped at one value
+- doing nothing scores *worse* than actually playing
+- no single factor dominates the others
+- no sudden cliffs as the room fills up
 
-Healthy signs to look for:
-- Reward distribution roughly unimodal (no clumps at single value)
-- DONE-trap gap > 0 (any "play" policy ≥ DONE-immediate)
-- No single factor dominates the discount (privacy / light / efficiency means in the same order of magnitude)
-- Continuity sweep smooth (no cliffs)
+**If training stalls:** `--ent-coef 0.05` encourages more exploration if the agent places too few items.
 
-## ❓ Open Issues to Watch
+---
 
-- **PPO failure modes** even with v3:
-  - If `episodes.csv` shows `n_placed` stuck low, try `--ent-coef 0.05` (more exploration)
-  - The training pipeline still supports `--placement-bonus X` (dense per-placement reward as further insurance — kept for backwards compat with v1/v2 runs)
-- **Action mask cost**: ≈ 3–4 ms per env step (vectorized). Fine for 500 K steps.
+<sub>CA6126 Reinforcement Learning · NTU CCDS · Lin Zekai & Wang Haocheng</sub>

@@ -33,3 +33,8 @@ videos/
 .idea/
 .vscode/
 *.swp
+
+# README assets — committed on purpose (hero GIF + figures used in README)
+!assets/
+!assets/*.gif
+!assets/*.png
