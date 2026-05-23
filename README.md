@@ -158,7 +158,3 @@ python reward_audit.py --n 2000 --save plots/audit.png
 - no sudden cliffs as the room fills up
 
 **If training stalls:** `--ent-coef 0.05` encourages more exploration if the agent places too few items.
-
----
-
-<sub>CA6126 Reinforcement Learning · NTU CCDS · Lin Zekai & Wang Haocheng</sub>
