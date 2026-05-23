@@ -58,9 +58,19 @@ While tuning the reward we noticed something: the **six ingredients can stay exa
 
 The pattern: **`×` behaves like a gate** (must-haves — if any factor is poor, the score drops), while **`+` behaves like negotiation** (a weak dimension can be traded off against a strong one). Choosing between them isn't a technical detail — it's a design decision about *what kind of room you want*.
 
-Compared on actual behavior, the additive agent spikes coverage and compactness but craters privacy and light, while the hybrid agent stays balanced across every axis:
+The clearest way to see it is in the rooms themselves — the same six ingredients, combined three ways, produce visibly different layouts:
 
-![Behavioral comparison of the three reward styles](assets/radar_profile.png)
+<p align="center">
+  <img src="assets/occupancy_styles.png" height="320"><br>
+  <i>Same ingredients, different recipe → different room. The difference maps (bottom) show where additive and multiplicative diverge from the hybrid baseline.</i>
+</p>
+
+And the recipe doesn't just change <i>what</i> the agent does — it changes how fast it can even learn:
+
+<p align="center">
+  <img src="assets/wall_clock_efficiency.png" height="300"><br>
+  <i>Hybrid converges in ~76 min; multiplicative stalls for the first ~140 min before any signal breaks through.</i>
+</p>
 
 ---
 
