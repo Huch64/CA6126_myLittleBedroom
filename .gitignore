@@ -38,3 +38,6 @@ videos/
 !assets/
 !assets/*.gif
 !assets/*.png
+
+# Hugging Face Spaces deploy folder — deployed separately, not part of submission
+hf_space/
