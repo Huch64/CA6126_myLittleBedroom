@@ -1,0 +1,19 @@
+name: Keep HF Space awake
+
+# Pings the live demo so the free Hugging Face Space doesn't go to sleep
+# after 48h of inactivity. Runs on GitHub's infra — no local machine needed.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # every 6 hours (UTC)
+  workflow_dispatch:        # allow manual runs from the Actions tab
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Curl the Space
+        run: |
+          url="https://Huch64-myLittleBedroom.hf.space/"
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 "$url")
+          echo "Pinged $url -> HTTP $code"

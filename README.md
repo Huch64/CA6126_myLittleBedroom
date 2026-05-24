@@ -1,5 +1,7 @@
 # 🏠 My Little Bedroom
 
+[![Live demo](https://img.shields.io/badge/🤗%20Live%20demo-Hugging%20Face%20Space-yellow)](https://huggingface.co/spaces/Huch64/myLittleBedroom)
+
 > Teaching a reinforcement-learning agent to **furnish a bedroom** — drop in the bed, desk, wardrobe and nightstand so the room actually feels livable: easy to move around, the bed kept private from the door, the window left unblocked, space used well. We never tell it *how* to arrange things — only score the finished room. Along the way we found that *how you write the reward* — adding terms vs. multiplying them — is itself a design language.
 
 <p align="center">
@@ -7,6 +9,10 @@
 </p>
 
 <p align="center"><i>The trained agent furnishing a brand-new random room. Nothing is hard-coded to go against a wall or near the window — keeping the bed private from the door, the window unblocked, and the floor walkable are all habits it picks up from the reward alone.</i></p>
+
+<p align="center">
+  <b>👉 <a href="https://huggingface.co/spaces/Huch64/myLittleBedroom">Try it live</a></b> — design a room (size, door, window), then let the trained agent furnish it.
+</p>
 
 ---
 
