@@ -1,5 +1,12 @@
 # 🏠 My Little Bedroom
 
+![Reinforcement Learning](https://img.shields.io/badge/Reinforcement%20Learning-PPO%20%2B%20action%20masking-6f42c1)
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?logo=pytorch&logoColor=white)
+![Stable-Baselines3](https://img.shields.io/badge/Stable--Baselines3-MaskablePPO-1f6feb)
+![Gymnasium](https://img.shields.io/badge/Gymnasium-custom%20env-0093E9)
+![License: MIT](https://img.shields.io/badge/License-MIT-green)
+<br>
 [![Live demo](https://img.shields.io/badge/🤗%20Live%20demo-Hugging%20Face%20Space-yellow)](https://huggingface.co/spaces/Huch64/myLittleBedroom)
 
 > A **reinforcement-learning agent that furnishes bedrooms** — placing the bed, desk, wardrobe and nightstand so the room is livable: easy to move through, bed kept private from the door, window left unblocked, floor space well used. We never tell it *how* to arrange anything; we only score the finished room. The twist we found along the way: *how you compose the reward* — summing terms vs. multiplying them — is itself a design language.
